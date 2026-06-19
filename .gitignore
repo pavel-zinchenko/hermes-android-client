@@ -1,0 +1,19 @@
+*.iml
+*.cmd
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build
+/app/build
+/captures
+/hermes-agent
+.externalNativeBuild
+.cxx
+local.properties
+
+# Gradle wrapper is bootstrapped, not checked in (see CLAUDE.md):
+#   gradle wrapper --gradle-version 9.3.1
+/gradlew
+/gradlew.bat
+/gradle/wrapper/
