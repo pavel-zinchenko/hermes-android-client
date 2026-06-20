@@ -3,7 +3,6 @@ package com.hermes.android.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -13,48 +12,37 @@ import kotlinx.coroutines.flow.map
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "hermes_settings")
 
 data class HermesSettings(
-    val baseUrl: String,
-    val apiKey: String,
     /**
-     * Base URL of the server that exposes the audio (STT/TTS) endpoints. Defaults
-     * to the Hermes dashboard web server (`hermes web`, port 9119). Ignored once
-     * the gateway advertises `audio_api` — see [HermesRepository] resolveAudioTarget.
+     * Base URL of the single Hermes backend — the dashboard (`hermes dashboard`,
+     * port 9119). It serves the JSON-RPC gateway WebSocket (`/api/ws`, used for
+     * chat + sessions) and the REST audio endpoints (`/api/audio/...`, used for
+     * voice). The legacy api_server (8642) has been retired.
      */
-    val voiceServerUrl: String = DEFAULT_VOICE_SERVER_URL,
-    /** Bearer key for [voiceServerUrl] (HERMES_DASHBOARD_SESSION_TOKEN for 9119). */
-    val voiceApiKey: String = "",
+    val serverUrl: String = DEFAULT_SERVER_URL,
+    /** Bearer/session token for [serverUrl] (HERMES_DASHBOARD_SESSION_TOKEN). */
+    val apiKey: String = "",
     /**
      * Optional content URI (SAF) of an audio file looped while Hermes is thinking.
      * Empty = no thinking sound.
      */
     val thinkingSoundUri: String = "",
-    /**
-     * When true, chat uses the streaming RPC gateway (WebSocket on the dashboard
-     * server) for sending and history; when false, the blocking REST api_server
-     * path is used. Both transports are kept while the Hermes API evolves.
-     */
-    val streamingEnabled: Boolean = false,
 ) {
-    /** Normalized base URL guaranteed to end with a single trailing slash. */
-    val normalizedBaseUrl: String
-        get() = baseUrl.ensureTrailingSlash()
-
-    /** Normalized voice server URL guaranteed to end with a single trailing slash. */
-    val normalizedVoiceServerUrl: String
-        get() = voiceServerUrl.ensureTrailingSlash()
+    /** Normalized server URL guaranteed to end with a single trailing slash. */
+    val normalizedServerUrl: String
+        get() = serverUrl.ensureTrailingSlash()
 
     /**
-     * WebSocket URL of the gateway, derived from the (dashboard/voice) server URL:
-     * `http(s)://host:9119/` → `ws(s)://host:9119/api/ws?token=<voiceApiKey>`. The
+     * WebSocket URL of the gateway, derived from the server URL:
+     * `http(s)://host:9119/` → `ws(s)://host:9119/api/ws?token=<apiKey>`. The
      * gateway accepts the `?token=` query credential in loopback mode.
      */
     val gatewayWsUrl: String
         get() {
-            val base = normalizedVoiceServerUrl
+            val base = normalizedServerUrl
                 .replaceFirst(Regex("^http://", RegexOption.IGNORE_CASE), "ws://")
                 .replaceFirst(Regex("^https://", RegexOption.IGNORE_CASE), "wss://")
-            val suffix = if (voiceApiKey.isNotBlank()) {
-                "api/ws?token=${java.net.URLEncoder.encode(voiceApiKey, "UTF-8")}"
+            val suffix = if (apiKey.isNotBlank()) {
+                "api/ws?token=${java.net.URLEncoder.encode(apiKey, "UTF-8")}"
             } else {
                 "api/ws"
             }
@@ -62,8 +50,7 @@ data class HermesSettings(
         }
 
     companion object {
-        const val DEFAULT_BASE_URL = "http://127.0.0.1:8642/"
-        const val DEFAULT_VOICE_SERVER_URL = "http://127.0.0.1:9119/"
+        const val DEFAULT_SERVER_URL = "http://127.0.0.1:9119/"
     }
 }
 
@@ -73,46 +60,32 @@ private fun String.ensureTrailingSlash(): String = if (endsWith("/")) this else 
 class SettingsStore(private val context: Context) {
 
     private object Keys {
-        val BASE_URL = stringPreferencesKey("base_url")
-        val API_KEY = stringPreferencesKey("api_key")
-        val VOICE_SERVER_URL = stringPreferencesKey("voice_server_url")
-        val VOICE_API_KEY = stringPreferencesKey("voice_api_key")
+        // The single dashboard server reuses the former voice-server keys so that
+        // an upgrading user who configured the 9119 dashboard token keeps it
+        // without re-entry. The pre-consolidation keys ("base_url", "api_key",
+        // "streaming_enabled") are intentionally no longer read.
+        val SERVER_URL = stringPreferencesKey("voice_server_url")
+        val API_KEY = stringPreferencesKey("voice_api_key")
         val THINKING_SOUND_URI = stringPreferencesKey("thinking_sound_uri")
-        val STREAMING_ENABLED = booleanPreferencesKey("streaming_enabled")
     }
 
     val settings: Flow<HermesSettings> = context.dataStore.data.map { prefs ->
         HermesSettings(
-            baseUrl = prefs[Keys.BASE_URL]?.takeIf { it.isNotBlank() }
-                ?: HermesSettings.DEFAULT_BASE_URL,
+            serverUrl = prefs[Keys.SERVER_URL]?.takeIf { it.isNotBlank() }
+                ?: HermesSettings.DEFAULT_SERVER_URL,
             apiKey = prefs[Keys.API_KEY].orEmpty(),
-            voiceServerUrl = prefs[Keys.VOICE_SERVER_URL]?.takeIf { it.isNotBlank() }
-                ?: HermesSettings.DEFAULT_VOICE_SERVER_URL,
-            voiceApiKey = prefs[Keys.VOICE_API_KEY].orEmpty(),
             thinkingSoundUri = prefs[Keys.THINKING_SOUND_URI].orEmpty(),
-            streamingEnabled = prefs[Keys.STREAMING_ENABLED] ?: false,
         )
     }
 
-    suspend fun update(baseUrl: String, apiKey: String) {
+    suspend fun update(serverUrl: String, apiKey: String) {
         context.dataStore.edit { prefs ->
-            prefs[Keys.BASE_URL] = baseUrl.trim()
+            prefs[Keys.SERVER_URL] = serverUrl.trim()
             prefs[Keys.API_KEY] = apiKey.trim()
-        }
-    }
-
-    suspend fun updateVoice(voiceServerUrl: String, voiceApiKey: String) {
-        context.dataStore.edit { prefs ->
-            prefs[Keys.VOICE_SERVER_URL] = voiceServerUrl.trim()
-            prefs[Keys.VOICE_API_KEY] = voiceApiKey.trim()
         }
     }
 
     suspend fun updateThinkingSound(uri: String) {
         context.dataStore.edit { prefs -> prefs[Keys.THINKING_SOUND_URI] = uri.trim() }
-    }
-
-    suspend fun updateStreaming(enabled: Boolean) {
-        context.dataStore.edit { prefs -> prefs[Keys.STREAMING_ENABLED] = enabled }
     }
 }

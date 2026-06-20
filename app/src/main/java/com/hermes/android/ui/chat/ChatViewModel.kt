@@ -58,13 +58,7 @@ class ChatViewModel(
     fun loadHistory() {
         _state.update { it.copy(loadingHistory = true, error = null) }
         viewModelScope.launch {
-            val streaming = repository.streamingEnabled()
-            val result = if (streaming) {
-                repository.getMessagesViaGateway(sessionId)
-            } else {
-                repository.getMessages(sessionId)
-            }
-            result
+            repository.getMessages(sessionId)
                 .onSuccess { history ->
                     _state.update { it.copy(loadingHistory = false, messages = history) }
                 }
@@ -87,28 +81,7 @@ class ChatViewModel(
             it.copy(messages = it.messages + pending, sending = true, statusLine = null, error = null)
         }
 
-        viewModelScope.launch {
-            if (repository.streamingEnabled()) {
-                sendStreaming(trimmed)
-            } else {
-                sendBlocking(trimmed)
-            }
-        }
-    }
-
-    private suspend fun sendBlocking(text: String) {
-        repository.sendMessage(sessionId, text)
-            .onSuccess { reply ->
-                val assistant = ChatMessage(
-                    id = "reply_${System.currentTimeMillis()}",
-                    sender = Sender.ASSISTANT,
-                    text = reply.ifBlank { "(empty response)" },
-                )
-                _state.update { it.copy(messages = it.messages + assistant, sending = false) }
-            }
-            .onFailure { err ->
-                _state.update { it.copy(sending = false, error = err.toUserMessage()) }
-            }
+        sendStreaming(trimmed)
     }
 
     private fun sendStreaming(text: String) {

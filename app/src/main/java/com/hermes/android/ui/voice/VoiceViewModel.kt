@@ -101,7 +101,7 @@ class VoiceViewModel(
 
         _state.update { it.copy(phase = VoicePhase.THINKING) }
         thinkingSound.start(repository.thinkingSoundUri())
-        val reply = repository.sendMessage(sessionId, transcript).getOrElse { err ->
+        val reply = repository.sendMessageBlocking(sessionId, transcript).getOrElse { err ->
             thinkingSound.stop()
             failTurn(err.toUserMessage())
             return

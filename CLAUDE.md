@@ -3,18 +3,34 @@
 Native Android app (Kotlin + Jetpack Compose) that provides a text chat UI for a
 **Hermes Agent** running locally on the same device (typically in Termux).
 
-## Architecture (text-only MVP)
+## Architecture
 
-The app is a thin REST client. It talks **directly** to Hermes's built-in
-OpenAI-compatible API server on `127.0.0.1:8642` — there is **no custom bridge
-server**. Hermes owns all conversation persistence (`~/.hermes/state.db`).
+The app talks to a **single** Hermes backend — the **dashboard**
+(`hermes dashboard`, `127.0.0.1:9119`) — over two channels on that one port:
+
+- **Chat + sessions** ride the **JSON-RPC gateway WebSocket** (`/api/ws`), which
+  streams responses, tool activity, thinking traces, and interactive requests
+  (approvals/clarify/secrets). This is the same protocol the Ink TUI and Electron
+  desktop app drive.
+- **Voice (STT/TTS)** uses the REST audio endpoints (`/api/audio/transcribe`,
+  `/api/audio/speak`) on the same server. The phone owns audio I/O (records OGG
+  locally, plays returned audio); the server is just a provider proxy. The
+  gateway's own `voice.*` methods drive the *server's* mic/speakers (the desktop
+  model) and are **deliberately not used** on Android.
+
+There is **no custom bridge server**, and the legacy api_server (8642) has been
+retired. Hermes owns all conversation persistence (`~/.hermes/state.db`).
 
 ```
-Android app (Compose UI → ViewModel → Repository → Retrofit)
-        │  HTTP (Bearer auth) on localhost:8642
-        ▼
-Hermes gateway api_server  ──►  Hermes agent + SQLite sessions
+Android app (Compose UI → ViewModel → Repository)
+   │  ws://…:9119/api/ws   (gateway: chat + sessions, ?token= auth)
+   │  http://…:9119/api/audio/*  (REST: STT/TTS, Bearer auth)
+   ▼
+hermes dashboard (9119)  ──►  Hermes agent + SQLite sessions
 ```
+
+See **[rpc-gateway.md](rpc-gateway.md)** for the phased migration that produced
+this (gateway transport + single-backend consolidation).
 
 ## Key docs
 
@@ -28,8 +44,9 @@ Hermes gateway api_server  ──►  Hermes agent + SQLite sessions
 ## `hermes-agent/` is READ-ONLY
 
 `./hermes-agent/` is a vendored copy of the upstream Hermes source, kept **only as a
-reference** for the API contract (the server lives at
-`hermes-agent/gateway/platforms/api_server.py`). It is **not part of this app's
+reference** for the API contract: the gateway protocol lives at
+`hermes-agent/tui_gateway/server.py` and the REST audio endpoints at
+`hermes-agent/gateway/platforms/api_server.py`. It is **not part of this app's
 build** and is git-ignored. **Never edit anything under `hermes-agent/`** — read it
 to understand Hermes, but make no changes there.
 
@@ -49,6 +66,7 @@ adb install app-debug.apk
 
 ## Scope
 
-In: text chat, session list/create/delete, settings (server URL + API key),
-connection gate. Out (deferred): voice (Groq STT / Edge TTS), media attachments,
-camera, SSE streaming, Room offline cache.
+In: streaming text chat with live tool/thinking activity and interactive requests,
+session list/create/delete, voice mode (Groq STT / Edge TTS over REST audio),
+settings (single server URL + token), connection gate. Out (deferred): media
+attachments, camera, Room offline cache.

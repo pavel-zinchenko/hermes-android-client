@@ -31,14 +31,7 @@ class SessionsViewModel(
     fun refresh() {
         _state.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
-            // Streaming mode lists over the gateway so the screen doesn't depend
-            // on the REST api_server (8642).
-            val result = if (repository.streamingEnabled()) {
-                repository.listSessionsViaGateway()
-            } else {
-                repository.listSessions()
-            }
-            result
+            repository.listSessions()
                 .onSuccess { sessions ->
                     _state.update { it.copy(loading = false, sessions = sessions, error = null) }
                 }
@@ -51,15 +44,7 @@ class SessionsViewModel(
     /** Creates a new session and returns its id via [onCreated] for navigation. */
     fun createSession(onCreated: (String) -> Unit) {
         viewModelScope.launch {
-            // In streaming mode the session must be created over the gateway so it
-            // inherits the configured model; a REST-created session is stamped with
-            // the "hermes-agent" label that the gateway later rejects.
-            val result = if (repository.streamingEnabled()) {
-                repository.createSessionViaGateway()
-            } else {
-                repository.createSession()
-            }
-            result
+            repository.createSession()
                 .onSuccess { session ->
                     refresh()
                     onCreated(session.id)
@@ -74,12 +59,7 @@ class SessionsViewModel(
         // Optimistic removal; refresh reconciles with the server.
         _state.update { it.copy(sessions = it.sessions.filterNot { s -> s.id == id }) }
         viewModelScope.launch {
-            val result = if (repository.streamingEnabled()) {
-                repository.deleteSessionViaGateway(id)
-            } else {
-                repository.deleteSession(id)
-            }
-            result
+            repository.deleteSession(id)
                 .onSuccess { refresh() }
                 .onFailure { err ->
                     _state.update { it.copy(error = err.toUserMessage()) }

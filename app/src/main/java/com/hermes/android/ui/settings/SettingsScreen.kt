@@ -29,7 +29,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -57,7 +56,6 @@ fun SettingsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var keyVisible by remember { mutableStateOf(false) }
-    var voiceKeyVisible by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val pickThinkingSound = rememberLauncherForActivityResult(
@@ -102,25 +100,26 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                text = "Connect to the Hermes API server running on this device.",
+                text = "Connect to the Hermes dashboard (run `hermes dashboard`) on this " +
+                    "device. It serves chat, sessions, and voice on one port.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             OutlinedTextField(
-                value = state.baseUrl,
-                onValueChange = viewModel::onBaseUrlChange,
+                value = state.serverUrl,
+                onValueChange = viewModel::onServerUrlChange,
                 label = { Text("Server URL") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                supportingText = { Text("Default: http://127.0.0.1:8642") },
+                supportingText = { Text("Default: http://127.0.0.1:9119") },
             )
 
             OutlinedTextField(
                 value = state.apiKey,
                 onValueChange = viewModel::onApiKeyChange,
-                label = { Text("API key (API_SERVER_KEY)") },
+                label = { Text("Token (HERMES_DASHBOARD_SESSION_TOKEN)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 visualTransformation = if (keyVisible) {
@@ -141,84 +140,6 @@ fun SettingsScreen(
                     }
                 },
             )
-
-            Text(
-                text = "Voice",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = "Used for speech-to-text and text-to-speech. Defaults to the " +
-                    "Hermes dashboard server (run `hermes web`, port 9119). Ignored " +
-                    "automatically once the gateway itself supports audio.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            OutlinedTextField(
-                value = state.voiceServerUrl,
-                onValueChange = viewModel::onVoiceServerUrlChange,
-                label = { Text("Voice server URL") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                supportingText = { Text("Default: http://127.0.0.1:9119") },
-            )
-
-            OutlinedTextField(
-                value = state.voiceApiKey,
-                onValueChange = viewModel::onVoiceApiKeyChange,
-                label = { Text("Voice server key (HERMES_DASHBOARD_SESSION_TOKEN)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                visualTransformation = if (voiceKeyVisible) {
-                    VisualTransformation.None
-                } else {
-                    PasswordVisualTransformation()
-                },
-                trailingIcon = {
-                    IconButton(onClick = { voiceKeyVisible = !voiceKeyVisible }) {
-                        Icon(
-                            imageVector = if (voiceKeyVisible) {
-                                Icons.Outlined.VisibilityOff
-                            } else {
-                                Icons.Outlined.Visibility
-                            },
-                            contentDescription = if (voiceKeyVisible) "Hide key" else "Show key",
-                        )
-                    }
-                },
-            )
-
-            Text(
-                text = "Chat",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Streaming responses",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "Stream replies token-by-token over the gateway " +
-                            "(uses the voice/dashboard server, port 9119). Off uses the " +
-                            "REST API server.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(
-                    checked = state.streamingEnabled,
-                    onCheckedChange = viewModel::setStreamingEnabled,
-                )
-            }
 
             Text(
                 text = "Thinking sound",

@@ -18,12 +18,9 @@ sealed interface TestResult {
 }
 
 data class SettingsUiState(
-    val baseUrl: String = "",
+    val serverUrl: String = "",
     val apiKey: String = "",
-    val voiceServerUrl: String = "",
-    val voiceApiKey: String = "",
     val thinkingSoundUri: String = "",
-    val streamingEnabled: Boolean = false,
     val loaded: Boolean = false,
     val saved: Boolean = false,
     val testResult: TestResult = TestResult.Idle,
@@ -42,29 +39,20 @@ class SettingsViewModel(
             val current = repository.currentSettings()
             _state.update {
                 it.copy(
-                    baseUrl = current.baseUrl,
+                    serverUrl = current.serverUrl,
                     apiKey = current.apiKey,
-                    voiceServerUrl = current.voiceServerUrl,
-                    voiceApiKey = current.voiceApiKey,
                     thinkingSoundUri = current.thinkingSoundUri,
-                    streamingEnabled = current.streamingEnabled,
                     loaded = true,
                 )
             }
         }
     }
 
-    fun onBaseUrlChange(value: String) =
-        _state.update { it.copy(baseUrl = value, saved = false, testResult = TestResult.Idle) }
+    fun onServerUrlChange(value: String) =
+        _state.update { it.copy(serverUrl = value, saved = false, testResult = TestResult.Idle) }
 
     fun onApiKeyChange(value: String) =
         _state.update { it.copy(apiKey = value, saved = false, testResult = TestResult.Idle) }
-
-    fun onVoiceServerUrlChange(value: String) =
-        _state.update { it.copy(voiceServerUrl = value, saved = false) }
-
-    fun onVoiceApiKeyChange(value: String) =
-        _state.update { it.copy(voiceApiKey = value, saved = false) }
 
     /** Persists the picked thinking-sound URI immediately (it carries a permission). */
     fun setThinkingSound(uri: String) {
@@ -74,29 +62,27 @@ class SettingsViewModel(
 
     fun clearThinkingSound() = setThinkingSound("")
 
-    /** Persists the streaming-transport choice immediately. */
-    fun setStreamingEnabled(enabled: Boolean) {
-        _state.update { it.copy(streamingEnabled = enabled) }
-        viewModelScope.launch { repository.updateStreaming(enabled) }
-    }
-
     fun save() {
         viewModelScope.launch {
             val s = _state.value
-            repository.updateSettings(s.baseUrl, s.apiKey)
-            repository.updateVoiceSettings(s.voiceServerUrl, s.voiceApiKey)
+            repository.updateSettings(s.serverUrl, s.apiKey)
             _state.update { it.copy(saved = true) }
         }
     }
 
-    /** Persists then probes /health so the test reflects exactly what was entered. */
+    /**
+     * Persists then probes the gateway WebSocket so the test reflects exactly what
+     * was entered — and exactly what the app depends on. (The dashboard serves no
+     * REST `/health`, so probing the gateway handshake is the real reachability
+     * check, matching the connection gate.)
+     */
     fun testConnection() {
         _state.update { it.copy(testResult = TestResult.Testing) }
         viewModelScope.launch {
             val s = _state.value
-            repository.updateSettings(s.baseUrl, s.apiKey)
+            repository.updateSettings(s.serverUrl, s.apiKey)
             _state.update { it.copy(saved = true) }
-            repository.checkHealth()
+            repository.checkHealthViaGateway()
                 .onSuccess { ok ->
                     _state.update {
                         it.copy(

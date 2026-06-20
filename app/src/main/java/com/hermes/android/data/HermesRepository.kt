@@ -1,11 +1,6 @@
 package com.hermes.android.data
 
 import android.util.Base64
-import com.hermes.android.data.dto.ChatRequest
-import com.hermes.android.data.dto.CreateSessionRequest
-import com.hermes.android.data.dto.MessageDto
-import com.hermes.android.data.dto.PatchSessionRequest
-import com.hermes.android.data.dto.SessionDto
 import com.hermes.android.data.dto.SpeakRequest
 import com.hermes.android.data.dto.TranscribeRequest
 import com.hermes.android.data.gateway.ApprovalRequestPayload
@@ -47,17 +42,17 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 
 /**
- * Single entry point to Hermes over HTTP. Holds the current settings (collected
- * from [SettingsStore]) so the Bearer key and base URL stay live without callers
+ * Single entry point to Hermes. Chat and sessions run over the JSON-RPC gateway
+ * WebSocket; voice (STT/TTS) and the health probe use the REST endpoints on the
+ * same dashboard server (9119). Holds the current settings (collected from
+ * [SettingsStore]) so the Bearer key and server URL stay live without callers
  * passing them in. Retrofit instances are memoized per base URL.
  */
 class HermesRepository(
     private val settingsStore: SettingsStore,
     appScope: CoroutineScope,
 ) {
-    private val _settings = MutableStateFlow(
-        HermesSettings(HermesSettings.DEFAULT_BASE_URL, "")
-    )
+    private val _settings = MutableStateFlow(HermesSettings())
     val settings: StateFlow<HermesSettings> = _settings.asStateFlow()
 
     init {
@@ -80,9 +75,9 @@ class HermesRepository(
         .build()
 
     /**
-     * The Bearer key for the audio client. Set by [resolveAudioTarget] before each
-     * audio call so [AuthInterceptor] (which reads synchronously on the OkHttp
-     * thread) uses the right token for the resolved server (9119 vs gateway).
+     * The Bearer key for the audio client. Set by [audioTarget] before each audio
+     * call so [AuthInterceptor] (which reads synchronously on the OkHttp thread)
+     * sees the current token.
      */
     @Volatile
     private var audioKey: String = ""
@@ -129,14 +124,6 @@ class HermesRepository(
     private val liveSessionIds = ConcurrentHashMap<String, LiveSession>()
 
     /**
-     * Cached result of the gateway `audio_api` capability probe (null = not yet
-     * probed). Decides whether voice routes to the gateway (B) or the separately
-     * configured voice server (A). Reset by [updateSettings].
-     */
-    @Volatile
-    private var gatewayAudioApi: Boolean? = null
-
-    /**
      * Builds (memoized per base URL) a Retrofit client bound to the **current
      * persisted** settings. We read DataStore here rather than the [_settings]
      * StateFlow because that flow is seeded with defaults and only catches up
@@ -148,7 +135,7 @@ class HermesRepository(
     private suspend fun api(): HermesApi {
         val settings = settingsStore.settings.first()
         _settings.value = settings
-        val baseUrl = settings.normalizedBaseUrl
+        val baseUrl = settings.normalizedServerUrl
         val existing = cachedApi
         if (existing != null && cachedBaseUrl == baseUrl) return existing
         val api = Retrofit.Builder()
@@ -165,7 +152,8 @@ class HermesRepository(
     /**
      * Builds (memoized per base URL) a Retrofit client for the audio (STT/TTS)
      * endpoints, bound to [baseUrl]. The Bearer key is supplied out-of-band via
-     * [audioKey] (set by [resolveAudioTarget]) because it varies with the target.
+     * [audioKey] (set by [audioTarget]) because [AuthInterceptor] reads it
+     * synchronously on the OkHttp thread.
      */
     private fun audioApi(baseUrl: String): HermesAudioApi {
         val existing = cachedAudioApi
@@ -182,48 +170,26 @@ class HermesRepository(
     }
 
     /**
-     * Resolves where audio calls go and primes [audioKey]. If the gateway reports
-     * `features.audio_api` (option B, after the upstream PR lands), voice rides the
-     * main gateway with the main key; otherwise it uses the separately configured
-     * voice server (option A, the dashboard web server on 9119). The probe result
-     * is cached for the session and reset by [updateSettings] / [updateVoiceSettings].
+     * Resolves the audio (STT/TTS) client and primes [audioKey] from the current
+     * settings. Voice rides the REST `/api/audio/...` endpoints on the single
+     * dashboard server — the gateway's own `voice.*` methods drive the server's
+     * microphone/speakers, which is the desktop model and unusable on Android.
      */
-    private suspend fun resolveAudioTarget(): HermesAudioApi {
+    private suspend fun audioTarget(): HermesAudioApi {
         val settings = settingsStore.settings.first()
         _settings.value = settings
-
-        if (gatewayAudioApi == null) {
-            gatewayAudioApi = runCatching { api().capabilities() }
-                .getOrNull()?.features?.audioApi ?: false
-        }
-
-        val baseUrl: String
-        if (gatewayAudioApi == true) {
-            baseUrl = settings.normalizedBaseUrl
-            audioKey = settings.apiKey
-        } else {
-            baseUrl = settings.normalizedVoiceServerUrl
-            audioKey = settings.voiceApiKey
-        }
-        return audioApi(baseUrl)
+        audioKey = settings.apiKey
+        return audioApi(settings.normalizedServerUrl)
     }
 
     /** Reads the persisted settings directly (avoids the StateFlow seed race). */
     suspend fun currentSettings(): HermesSettings = settingsStore.settings.first()
 
-    suspend fun updateSettings(baseUrl: String, apiKey: String) {
-        gatewayAudioApi = null // re-probe against the new gateway
-        settingsStore.update(baseUrl, apiKey)
-    }
-
-    suspend fun updateVoiceSettings(voiceServerUrl: String, voiceApiKey: String) {
-        gatewayAudioApi = null
-        settingsStore.updateVoice(voiceServerUrl, voiceApiKey)
+    suspend fun updateSettings(serverUrl: String, apiKey: String) {
+        settingsStore.update(serverUrl, apiKey)
     }
 
     suspend fun updateThinkingSound(uri: String) = settingsStore.updateThinkingSound(uri)
-
-    suspend fun updateStreaming(enabled: Boolean) = settingsStore.updateStreaming(enabled)
 
     /** Content URI of the looped "thinking" sound, or empty if none is set. */
     suspend fun thinkingSoundUri(): String = settingsStore.settings.first().thinkingSoundUri
@@ -234,10 +200,9 @@ class HermesRepository(
     }
 
     /**
-     * Reachability probe for streaming mode: opens the gateway WebSocket (which
-     * resolves on the `gateway.ready` handshake and throws on timeout/failure).
-     * In streaming mode chat runs over the gateway (9119), so the REST api_server
-     * (8642) need not be running — probe what the app actually uses.
+     * Reachability probe: opens the gateway WebSocket, which resolves on the
+     * `gateway.ready` handshake and throws on timeout/failure. Chat runs over the
+     * gateway, so this probes exactly what the app actually depends on.
      */
     suspend fun checkHealthViaGateway(): Result<Boolean> = runCatching {
         val settings = settingsStore.settings.first()
@@ -246,50 +211,21 @@ class HermesRepository(
         gateway.connectionState.value == ConnectionState.OPEN
     }
 
-    suspend fun listSessions(): Result<List<ChatSession>> = runCatching {
-        api().listSessions().data.map { it.toModel() }
-    }
-
-    suspend fun createSession(title: String? = null): Result<ChatSession> = runCatching {
-        api().createSession(CreateSessionRequest(title = title)).session.toModel()
-    }
-
-    suspend fun renameSession(id: String, title: String): Result<ChatSession> = runCatching {
-        api().renameSession(id, PatchSessionRequest(title)).session.toModel()
-    }
-
-    suspend fun deleteSession(id: String): Result<Unit> = runCatching {
-        api().deleteSession(id)
-    }
-
-    suspend fun getMessages(id: String): Result<List<ChatMessage>> = runCatching {
-        api().getMessages(id).data.mapNotNull { it.toModelOrNull() }
-    }
-
-    /** Sends one turn and returns the assistant reply text. */
-    suspend fun sendMessage(sessionId: String, text: String): Result<String> = runCatching {
-        val response = api().sendMessage(sessionId, ChatRequest(text))
-        response.message?.content.orEmpty()
-    }
-
-    // --- Gateway (streaming) chat ------------------------------------------
+    // --- Gateway chat ------------------------------------------------------
     // The gateway uses a per-connection *live* session id, distinct from the
     // stored DB id the app carries. session.resume maps the stored id → a live
     // sid (and returns the transcript); prompt.submit + events run on the live
     // sid. See data/gateway/ and HERMES_INTEGRATION.md.
 
-    /** True iff the user has opted into the streaming gateway transport. */
-    suspend fun streamingEnabled(): Boolean = settingsStore.settings.first().streamingEnabled
-
     /**
      * Creates a session over the gateway so it carries the gateway's configured
      * model. (A session created via the REST api_server is stamped with the
      * advertised label "hermes-agent", which the gateway later restores as the
-     * live model and the provider rejects — so streaming chats must originate
-     * here.) The DB row persists lazily on the first prompt; we cache the live
-     * sid now so that first turn can run before any resume is possible.
+     * live model and the provider rejects — so chats must originate here.) The DB
+     * row persists lazily on the first prompt; we cache the live sid now so that
+     * first turn can run before any resume is possible.
      */
-    suspend fun createSessionViaGateway(title: String? = null): Result<ChatSession> = runCatching {
+    suspend fun createSession(title: String? = null): Result<ChatSession> = runCatching {
         val settings = settingsStore.settings.first()
         _settings.value = settings
         gateway.connect(settings.gatewayWsUrl)
@@ -313,12 +249,8 @@ class HermesRepository(
         )
     }
 
-    /**
-     * Lists stored sessions over the gateway (`session.list`). The streaming-mode
-     * twin of [listSessions] so the Sessions screen does not require the REST
-     * api_server (8642) to be running.
-     */
-    suspend fun listSessionsViaGateway(): Result<List<ChatSession>> = runCatching {
+    /** Lists stored sessions over the gateway (`session.list`). */
+    suspend fun listSessions(): Result<List<ChatSession>> = runCatching {
         val settings = settingsStore.settings.first()
         _settings.value = settings
         gateway.connect(settings.gatewayWsUrl)
@@ -334,7 +266,7 @@ class HermesRepository(
      * refuses to delete a session currently live in its process (RPC 4023); that
      * surfaces as a [GatewayException] the caller can report.
      */
-    suspend fun deleteSessionViaGateway(storedId: String): Result<Unit> = runCatching {
+    suspend fun deleteSession(storedId: String): Result<Unit> = runCatching {
         val settings = settingsStore.settings.first()
         _settings.value = settings
         gateway.connect(settings.gatewayWsUrl)
@@ -404,9 +336,41 @@ class HermesRepository(
     }
 
     /** Loads the transcript for [storedId] via the gateway (resume payload). */
-    suspend fun getMessagesViaGateway(storedId: String): Result<List<ChatMessage>> = runCatching {
+    suspend fun getMessages(storedId: String): Result<List<ChatMessage>> = runCatching {
         ensureLiveSession(storedId).messages
             .mapIndexedNotNull { index, message -> message.toChatMessageOrNull(index) }
+    }
+
+    /**
+     * Runs one turn over the gateway and returns the final assistant text. Collects
+     * [submitPromptStreaming] to its terminal event, folding deltas into the reply
+     * and preferring the authoritative `message.complete` text when present. Used by
+     * voice mode, which needs the whole reply at once rather than incrementally;
+     * tool/thinking events are ignored.
+     *
+     * An interactive request (clarify/approval/sudo/secret) ends the turn with an
+     * error rather than being ignored: voice mode has no UI to answer one, so the
+     * agent would otherwise block server-side forever (no `message.complete` arrives
+     * and the gateway socket has no call timeout), hanging the voice turn.
+     */
+    suspend fun sendMessageBlocking(storedId: String, text: String): Result<String> = runCatching {
+        val reply = StringBuilder()
+        submitPromptStreaming(storedId, text).collect { event ->
+            when (event) {
+                is ChatEvent.Delta -> reply.append(event.text)
+                is ChatEvent.Complete -> if (event.text.isNotBlank()) {
+                    reply.setLength(0)
+                    reply.append(event.text)
+                }
+                is ChatEvent.Failure -> throw GatewayException(event.message)
+                is ChatEvent.Interactive -> throw GatewayException(
+                    "Hermes needs interactive input, which voice mode can't provide. " +
+                        "Use text chat for this request.",
+                )
+                else -> {}
+            }
+        }
+        reply.toString()
     }
 
     /**
@@ -624,7 +588,7 @@ class HermesRepository(
     /** Transcribes recorded audio to text via Hermes's configured STT provider. */
     suspend fun transcribe(audio: ByteArray, mime: String): Result<String> = runCatching {
         val encoded = Base64.encodeToString(audio, Base64.NO_WRAP)
-        val response = resolveAudioTarget().transcribe(
+        val response = audioTarget().transcribe(
             TranscribeRequest(dataUrl = "data:$mime;base64,$encoded", mimeType = mime)
         )
         if (!response.ok) throw IllegalStateException("Transcription failed")
@@ -633,7 +597,7 @@ class HermesRepository(
 
     /** Synthesizes [text] to speech via Hermes's configured TTS provider chain. */
     suspend fun speak(text: String): Result<DecodedAudio> = runCatching {
-        val response = resolveAudioTarget().speak(SpeakRequest(text))
+        val response = audioTarget().speak(SpeakRequest(text))
         val dataUrl = response.dataUrl
         if (!response.ok || dataUrl.isNullOrBlank()) {
             throw IllegalStateException("Speech synthesis failed")
@@ -689,36 +653,9 @@ private fun com.hermes.android.data.gateway.GatewaySessionRow.toModelOrNull(): C
     )
 }
 
-private fun SessionDto.toModel(): ChatSession = ChatSession(
-    id = id,
-    title = title?.takeIf { it.isNotBlank() } ?: "Untitled",
-    messageCount = messageCount ?: 0,
-    lastActive = lastActive ?: startedAt,
-    preview = preview,
-)
-
 /**
- * Maps a stored message to a chat bubble. Only user/assistant turns are surfaced;
- * tool/system rows and empty assistant placeholders are dropped from the UI.
- */
-private fun MessageDto.toModelOrNull(): ChatMessage? {
-    val sender = when (role.lowercase()) {
-        "user" -> Sender.USER
-        "assistant" -> Sender.ASSISTANT
-        else -> return null
-    }
-    val body = content?.trim().orEmpty()
-    if (body.isEmpty()) return null
-    return ChatMessage(
-        id = id ?: "${role}_${body.hashCode()}",
-        sender = sender,
-        text = body,
-    )
-}
-
-/**
- * Maps a gateway transcript message to a chat bubble. Like [toModelOrNull] but
- * for the gateway's `{role, text}` shape (tool/system rows and empties dropped).
+ * Maps a gateway transcript message to a chat bubble for the gateway's
+ * `{role, text}` shape (tool/system rows and empties dropped).
  *
  * The gateway transcript carries no message ids, so the id is derived from the
  * message's [index] in the transcript. Hashing the content instead would collide
