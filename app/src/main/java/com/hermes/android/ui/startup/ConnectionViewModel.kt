@@ -29,7 +29,14 @@ class ConnectionViewModel(
     fun probe() {
         _state.value = ConnectionState.Checking
         viewModelScope.launch {
-            repository.checkHealth()
+            // In streaming mode chat runs over the gateway (9119); probe that
+            // instead of the REST api_server (8642), which may not be running.
+            val health = if (repository.streamingEnabled()) {
+                repository.checkHealthViaGateway()
+            } else {
+                repository.checkHealth()
+            }
+            health
                 .onSuccess { ok ->
                     _state.value = if (ok) {
                         ConnectionState.Connected

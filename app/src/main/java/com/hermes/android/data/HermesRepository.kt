@@ -16,7 +16,10 @@ import com.hermes.android.data.gateway.GatewayException
 import com.hermes.android.data.gateway.HermesGateway
 import com.hermes.android.data.gateway.MessageCompletePayload
 import com.hermes.android.data.gateway.ResumeResult
+import com.hermes.android.data.gateway.SessionListResult
 import com.hermes.android.data.gateway.StatusPayload
+import com.hermes.android.data.gateway.ToolCompletePayload
+import com.hermes.android.data.gateway.ToolStartPayload
 import com.hermes.android.data.model.ChatMessage
 import com.hermes.android.data.model.ChatSession
 import com.hermes.android.data.model.Sender
@@ -225,6 +228,19 @@ class HermesRepository(
         api().health().status.equals("ok", ignoreCase = true)
     }
 
+    /**
+     * Reachability probe for streaming mode: opens the gateway WebSocket (which
+     * resolves on the `gateway.ready` handshake and throws on timeout/failure).
+     * In streaming mode chat runs over the gateway (9119), so the REST api_server
+     * (8642) need not be running — probe what the app actually uses.
+     */
+    suspend fun checkHealthViaGateway(): Result<Boolean> = runCatching {
+        val settings = settingsStore.settings.first()
+        _settings.value = settings
+        gateway.connect(settings.gatewayWsUrl)
+        gateway.connectionState.value == ConnectionState.OPEN
+    }
+
     suspend fun listSessions(): Result<List<ChatSession>> = runCatching {
         api().listSessions().data.map { it.toModel() }
     }
@@ -290,6 +306,35 @@ class HermesRepository(
             lastActive = null,
             preview = null,
         )
+    }
+
+    /**
+     * Lists stored sessions over the gateway (`session.list`). The streaming-mode
+     * twin of [listSessions] so the Sessions screen does not require the REST
+     * api_server (8642) to be running.
+     */
+    suspend fun listSessionsViaGateway(): Result<List<ChatSession>> = runCatching {
+        val settings = settingsStore.settings.first()
+        _settings.value = settings
+        gateway.connect(settings.gatewayWsUrl)
+        val result = gson.fromJson(
+            gateway.call("session.list"),
+            SessionListResult::class.java,
+        )
+        result.sessions.mapNotNull { it.toModelOrNull() }
+    }
+
+    /**
+     * Deletes a stored session over the gateway (`session.delete`). The gateway
+     * refuses to delete a session currently live in its process (RPC 4023); that
+     * surfaces as a [GatewayException] the caller can report.
+     */
+    suspend fun deleteSessionViaGateway(storedId: String): Result<Unit> = runCatching {
+        val settings = settingsStore.settings.first()
+        _settings.value = settings
+        gateway.connect(settings.gatewayWsUrl)
+        gateway.call("session.delete", mapOf("session_id" to storedId))
+        Unit
     }
 
     /**
@@ -407,6 +452,37 @@ class HermesRepository(
                         val p = ev.payload?.let { gson.fromJson(it, StatusPayload::class.java) }
                         trySend(ChatEvent.Status(p?.kind.orEmpty(), p?.text.orEmpty()))
                     }
+                    // Tool and thinking events are gated on `started` for the same
+                    // reason as delta/complete: the gateway always emits this turn's
+                    // `message.start` before the agent runs (and thus before any tool
+                    // or thinking event), so gating here drops nothing legitimate —
+                    // it only suppresses trailing events from a just-interrupted prior
+                    // turn on the same sid (Stop → immediate resend), which would
+                    // otherwise leak a stray chip/thinking block into this turn.
+                    "tool.start" -> {
+                        if (!started) return@collect
+                        val p = ev.payload
+                            ?.let { gson.fromJson(it, ToolStartPayload::class.java) }
+                        val id = p?.toolId
+                        if (!id.isNullOrEmpty()) {
+                            trySend(ChatEvent.ToolStart(id, p.name.orEmpty(), p.context))
+                        }
+                    }
+                    "tool.complete" -> {
+                        if (!started) return@collect
+                        val p = ev.payload
+                            ?.let { gson.fromJson(it, ToolCompletePayload::class.java) }
+                        val id = p?.toolId
+                        if (!id.isNullOrEmpty()) {
+                            trySend(ChatEvent.ToolComplete(id, p.summary, p.resultText, p.durationS))
+                        }
+                    }
+                    "thinking.delta", "reasoning.delta" -> {
+                        if (!started) return@collect
+                        val text = ev.payload
+                            ?.let { gson.fromJson(it, DeltaPayload::class.java) }?.text
+                        if (!text.isNullOrEmpty()) trySend(ChatEvent.Thinking(text))
+                    }
                     "message.complete" -> {
                         if (!started) return@collect
                         val p = ev.payload
@@ -500,6 +576,22 @@ data class DecodedAudio(
     val bytes: ByteArray,
     val mime: String,
 )
+
+/**
+ * Maps a gateway `session.list` row to the app's [ChatSession]. Rows without an
+ * id are dropped. `started_at` is not surfaced (the list UI shows title + preview/
+ * count only), so [ChatSession.lastActive] is left null.
+ */
+private fun com.hermes.android.data.gateway.GatewaySessionRow.toModelOrNull(): ChatSession? {
+    val sid = id?.takeIf { it.isNotBlank() } ?: return null
+    return ChatSession(
+        id = sid,
+        title = title?.takeIf { it.isNotBlank() } ?: "Untitled",
+        messageCount = messageCount ?: 0,
+        lastActive = null,
+        preview = preview?.takeIf { it.isNotBlank() },
+    )
+}
 
 private fun SessionDto.toModel(): ChatSession = ChatSession(
     id = id,

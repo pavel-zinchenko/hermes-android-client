@@ -62,6 +62,40 @@ data class MessageCompletePayload(
 /** `error`: `{message}`. */
 data class ErrorPayload(val message: String? = null)
 
+/** `tool.start`: `{tool_id, name, context, args_text?}`. */
+data class ToolStartPayload(
+    @SerializedName("tool_id") val toolId: String? = null,
+    val name: String? = null,
+    val context: String? = null,
+)
+
+/**
+ * `tool.complete`: `{tool_id, name, args, result, duration_s?, summary?,
+ * result_text?, …}`. Only the fields the chip renders are decoded; `result_text`
+ * is present only when the session runs in verbose tool-progress mode.
+ */
+data class ToolCompletePayload(
+    @SerializedName("tool_id") val toolId: String? = null,
+    val name: String? = null,
+    val summary: String? = null,
+    @SerializedName("result_text") val resultText: String? = null,
+    @SerializedName("duration_s") val durationS: Double? = null,
+)
+
+/** Result of `session.list`: `{sessions:[…]}` (see tui_gateway/server.py). */
+data class SessionListResult(
+    val sessions: List<GatewaySessionRow> = emptyList(),
+)
+
+data class GatewaySessionRow(
+    val id: String? = null,
+    val title: String? = null,
+    val preview: String? = null,
+    @SerializedName("started_at") val startedAt: Long? = null,
+    @SerializedName("message_count") val messageCount: Int? = null,
+    val source: String? = null,
+)
+
 /**
  * Result of `session.resume` / `session.create`: the live `session_id` plus the
  * stored transcript. Note the gateway serializes each message's visible text
@@ -107,6 +141,20 @@ sealed interface ChatEvent {
 
     /** Transient activity line, e.g. "Searching the web…". */
     data class Status(val kind: String, val text: String) : ChatEvent
+
+    /** A tool invocation has begun; render a pending chip keyed by [toolId]. */
+    data class ToolStart(val toolId: String, val name: String, val context: String?) : ChatEvent
+
+    /** A tool invocation (matched by [toolId]) finished. */
+    data class ToolComplete(
+        val toolId: String,
+        val summary: String?,
+        val resultText: String?,
+        val durationS: Double?,
+    ) : ChatEvent
+
+    /** A chunk of the agent's thinking/reasoning trace (`thinking.delta` + `reasoning.delta`). */
+    data class Thinking(val text: String) : ChatEvent
 
     /** Terminal: the final assistant text and turn [status]. */
     data class Complete(val text: String, val status: String?) : ChatEvent

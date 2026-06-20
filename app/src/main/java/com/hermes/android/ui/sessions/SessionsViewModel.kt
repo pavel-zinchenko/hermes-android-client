@@ -31,7 +31,14 @@ class SessionsViewModel(
     fun refresh() {
         _state.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
-            repository.listSessions()
+            // Streaming mode lists over the gateway so the screen doesn't depend
+            // on the REST api_server (8642).
+            val result = if (repository.streamingEnabled()) {
+                repository.listSessionsViaGateway()
+            } else {
+                repository.listSessions()
+            }
+            result
                 .onSuccess { sessions ->
                     _state.update { it.copy(loading = false, sessions = sessions, error = null) }
                 }
@@ -67,7 +74,12 @@ class SessionsViewModel(
         // Optimistic removal; refresh reconciles with the server.
         _state.update { it.copy(sessions = it.sessions.filterNot { s -> s.id == id }) }
         viewModelScope.launch {
-            repository.deleteSession(id)
+            val result = if (repository.streamingEnabled()) {
+                repository.deleteSessionViaGateway(id)
+            } else {
+                repository.deleteSession(id)
+            }
+            result
                 .onSuccess { refresh() }
                 .onFailure { err ->
                     _state.update { it.copy(error = err.toUserMessage()) }

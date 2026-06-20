@@ -7,6 +7,8 @@ import com.hermes.android.data.HermesRepository
 import com.hermes.android.data.gateway.ChatEvent
 import com.hermes.android.data.model.ChatMessage
 import com.hermes.android.data.model.Sender
+import com.hermes.android.data.model.ToolState
+import com.hermes.android.data.model.TurnPart
 import com.hermes.android.ui.toUserMessage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +24,10 @@ data class ChatUiState(
     val statusLine: String? = null,
     val error: String? = null,
 )
+
+/** Collapses every thinking part in the turn (used once the answer begins). */
+private fun List<TurnPart>.collapseThinking(): List<TurnPart> =
+    map { if (it is TurnPart.Thinking) it.copy(expanded = false) else it }
 
 class ChatViewModel(
     private val repository: HermesRepository,
@@ -105,7 +111,10 @@ class ChatViewModel(
                 .collect { event ->
                     when (event) {
                         ChatEvent.Start -> ensureStreamBubble(bubbleId)
-                        is ChatEvent.Delta -> appendToBubble(bubbleId, event.text)
+                        is ChatEvent.Delta -> appendText(bubbleId, event.text)
+                        is ChatEvent.Thinking -> appendThinking(bubbleId, event.text)
+                        is ChatEvent.ToolStart -> addTool(bubbleId, event)
+                        is ChatEvent.ToolComplete -> completeTool(bubbleId, event)
                         is ChatEvent.Status ->
                             _state.update { it.copy(statusLine = event.text.ifBlank { null }) }
                         is ChatEvent.Complete -> finishBubble(bubbleId, event.text)
@@ -120,44 +129,108 @@ class ChatViewModel(
                     sending = false,
                     statusLine = null,
                     messages = state.messages.map {
-                        if (it.id == bubbleId) it.copy(streaming = false) else it
+                        if (it.id == bubbleId) {
+                            it.copy(parts = it.parts.collapseThinking(), streaming = false)
+                        } else it
                     },
                 )
             }
         }
     }
 
-    /** Inserts the assistant bubble on first activity if it isn't present yet. */
-    private fun ensureStreamBubble(bubbleId: String) = _state.update { state ->
-        if (state.messages.any { it.id == bubbleId }) {
-            state
-        } else {
-            state.copy(
-                messages = state.messages +
-                    ChatMessage(id = bubbleId, sender = Sender.ASSISTANT, text = "", streaming = true),
-            )
-        }
-    }
-
-    private fun appendToBubble(bubbleId: String, delta: String) = _state.update { state ->
+    /**
+     * Mutates the [bubbleId] assistant message's [parts], creating the bubble if it
+     * isn't present yet. Any transient status line is cleared once real content arrives.
+     */
+    private fun updateParts(
+        bubbleId: String,
+        transform: (List<TurnPart>) -> List<TurnPart>,
+    ) = _state.update { state ->
         val exists = state.messages.any { it.id == bubbleId }
         val base = if (exists) state.messages else state.messages +
             ChatMessage(id = bubbleId, sender = Sender.ASSISTANT, text = "", streaming = true)
         state.copy(
             statusLine = null,
             messages = base.map {
-                if (it.id == bubbleId) it.copy(text = it.text + delta, streaming = true) else it
+                if (it.id == bubbleId) it.copy(parts = transform(it.parts), streaming = true) else it
             },
         )
+    }
+
+    /** First turn activity (`message.start`): make sure the streaming bubble exists. */
+    private fun ensureStreamBubble(bubbleId: String) = updateParts(bubbleId) { it }
+
+    private fun appendText(bubbleId: String, delta: String) = updateParts(bubbleId) { parts ->
+        // The visible answer has begun → collapse the thinking trace shown while it
+        // streamed. `message.start` fires before any thinking/answer text, so this
+        // (the first answer delta), not Start, is when "the answer begins".
+        val collapsed = parts.collapseThinking()
+        val last = collapsed.lastOrNull()
+        if (last is TurnPart.Text) {
+            collapsed.dropLast(1) + last.copy(text = last.text + delta)
+        } else {
+            // A tool/thinking part interleaved before this text → start a new segment.
+            collapsed + TurnPart.Text(delta)
+        }
+    }
+
+    private fun appendThinking(bubbleId: String, delta: String) = updateParts(bubbleId) { parts ->
+        val last = parts.lastOrNull()
+        if (last is TurnPart.Thinking) {
+            parts.dropLast(1) + last.copy(text = last.text + delta)
+        } else {
+            parts + TurnPart.Thinking(delta)
+        }
+    }
+
+    private fun addTool(bubbleId: String, e: ChatEvent.ToolStart) = updateParts(bubbleId) { parts ->
+        if (parts.any { it is TurnPart.Tool && it.toolId == e.toolId }) {
+            parts // idempotent: ignore a duplicate start for the same tool id
+        } else {
+            parts + TurnPart.Tool(
+                toolId = e.toolId,
+                name = e.name,
+                context = e.context,
+                state = ToolState.RUNNING,
+            )
+        }
+    }
+
+    private fun completeTool(bubbleId: String, e: ChatEvent.ToolComplete) = updateParts(bubbleId) { parts ->
+        parts.map {
+            if (it is TurnPart.Tool && it.toolId == e.toolId) {
+                it.copy(
+                    state = ToolState.DONE,
+                    summary = e.summary ?: it.summary,
+                    resultText = e.resultText ?: it.resultText,
+                    durationS = e.durationS ?: it.durationS,
+                )
+            } else it
+        }
     }
 
     private fun finishBubble(bubbleId: String, finalText: String) = _state.update { state ->
         val exists = state.messages.any { it.id == bubbleId }
         val messages = if (exists) {
-            state.messages.map {
-                if (it.id == bubbleId) {
-                    it.copy(text = finalText.ifBlank { it.text }.ifBlank { "(empty response)" }, streaming = false)
-                } else it
+            state.messages.map { m ->
+                if (m.id != bubbleId) {
+                    m
+                } else {
+                    var parts = m.parts.collapseThinking()
+                    // If the turn produced parts but no text segment, append the
+                    // final answer so it isn't lost (e.g. tools-only streaming).
+                    if (m.parts.isNotEmpty() &&
+                        m.parts.none { it is TurnPart.Text } &&
+                        finalText.isNotBlank()
+                    ) {
+                        parts = parts + TurnPart.Text(finalText)
+                    }
+                    m.copy(
+                        text = finalText.ifBlank { m.text }.ifBlank { "(empty response)" },
+                        parts = parts,
+                        streaming = false,
+                    )
+                }
             }
         } else {
             state.messages + ChatMessage(
@@ -174,12 +247,30 @@ class ChatViewModel(
             sending = false,
             statusLine = null,
             error = message,
-            // Drop an empty streaming bubble; keep any partial text.
+            // Drop a bubble with nothing to show; keep any partial text/tools.
             messages = state.messages.mapNotNull {
                 when {
                     it.id != bubbleId -> it
-                    it.text.isBlank() -> null
-                    else -> it.copy(streaming = false)
+                    it.text.isBlank() && it.parts.isEmpty() -> null
+                    else -> it.copy(parts = it.parts.collapseThinking(), streaming = false)
+                }
+            },
+        )
+    }
+
+    /** Toggles the thinking trace on [messageId] (collapsed after the answer begins). */
+    fun toggleThinking(messageId: String) = _state.update { state ->
+        state.copy(
+            messages = state.messages.map { m ->
+                if (m.id != messageId) {
+                    m
+                } else {
+                    val anyExpanded = m.parts.any { it is TurnPart.Thinking && it.expanded }
+                    m.copy(
+                        parts = m.parts.map {
+                            if (it is TurnPart.Thinking) it.copy(expanded = !anyExpanded) else it
+                        },
+                    )
                 }
             },
         )
