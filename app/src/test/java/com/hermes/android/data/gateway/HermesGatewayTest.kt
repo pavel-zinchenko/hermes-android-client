@@ -122,6 +122,46 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun `approval request event surfaces with a parseable payload`() = runBlocking {
+        enqueueServer { ws, frame ->
+            val id = frame.get("id").asString
+            ws.send(gson.toJson(JsonObject().apply {
+                addProperty("jsonrpc", "2.0")
+                addProperty("id", id)
+                add("result", JsonObject())
+            }))
+            val event = JsonObject().apply {
+                addProperty("jsonrpc", "2.0")
+                addProperty("method", "event")
+                add("params", JsonObject().apply {
+                    addProperty("type", "approval.request")
+                    addProperty("session_id", "live123")
+                    add("payload", JsonObject().apply {
+                        addProperty("command", "rm -rf /tmp/x")
+                        addProperty("description", "recursive delete")
+                    })
+                })
+            }
+            ws.send(gson.toJson(event))
+        }
+        val gateway = newGateway()
+        gateway.connect(server.url("/api/ws").toString())
+
+        val received = CompletableDeferred<GatewayEvent>()
+        val job = launch { gateway.on("approval.request").collect { received.complete(it) } }
+        delay(150)
+
+        gateway.call("noop")
+        val event = withTimeout(3000) { received.await() }
+        job.cancel()
+
+        assertEquals("approval.request", event.type)
+        val payload = gson.fromJson(event.payload, ApprovalRequestPayload::class.java)
+        assertEquals("rm -rf /tmp/x", payload.command)
+        assertEquals("recursive delete", payload.description)
+    }
+
+    @Test
     fun `rpc error rejects the call`() = runBlocking {
         enqueueServer { ws, frame ->
             val id = frame.get("id").asString

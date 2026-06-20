@@ -187,6 +187,17 @@ fun ChatScreen(
                 onStop = viewModel::stop,
             )
         }
+
+        // Interactive request modals (approval / clarify / sudo / secret). Shows
+        // the head of the queue; an AlertDialog overlays regardless of where it
+        // sits in the composition.
+        InteractiveRequestHost(
+            request = state.pendingRequests.firstOrNull(),
+            onApproval = viewModel::respondApproval,
+            onClarify = viewModel::respondClarify,
+            onSudo = viewModel::respondSudo,
+            onSecret = viewModel::respondSecret,
+        )
     }
 }
 

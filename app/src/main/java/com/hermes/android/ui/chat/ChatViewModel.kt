@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermes.android.data.HermesRepository
 import com.hermes.android.data.gateway.ChatEvent
+import com.hermes.android.data.gateway.InteractiveRequest
 import com.hermes.android.data.model.ChatMessage
 import com.hermes.android.data.model.Sender
 import com.hermes.android.data.model.ToolState
@@ -23,6 +24,12 @@ data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val statusLine: String? = null,
     val error: String? = null,
+    /**
+     * Interactive requests the agent is blocked on, oldest first. The agent
+     * blocks on one at a time per session, but a queue keeps things serialized;
+     * the UI shows only the head.
+     */
+    val pendingRequests: List<InteractiveRequest> = emptyList(),
 )
 
 /** Collapses every thinking part in the turn (used once the answer begins). */
@@ -117,6 +124,8 @@ class ChatViewModel(
                         is ChatEvent.ToolComplete -> completeTool(bubbleId, event)
                         is ChatEvent.Status ->
                             _state.update { it.copy(statusLine = event.text.ifBlank { null }) }
+                        is ChatEvent.Interactive ->
+                            _state.update { it.copy(pendingRequests = it.pendingRequests + event.request) }
                         is ChatEvent.Complete -> finishBubble(bubbleId, event.text)
                         is ChatEvent.Failure -> failTurn(bubbleId, event.message)
                     }
@@ -124,10 +133,15 @@ class ChatViewModel(
         }
         streamJob?.invokeOnCompletion { cause ->
             // Cancellation (Stop) leaves whatever streamed so far; just clear flags.
+            // Only Stop calls session.interrupt, which clears pending prompts
+            // server-side, so only then drop any unanswered request dialog to
+            // match. A normal/error close leaves the queue alone — hiding a dialog
+            // the agent is still blocked on would strand the turn server-side.
             _state.update { state ->
                 state.copy(
                     sending = false,
                     statusLine = null,
+                    pendingRequests = if (cause != null) emptyList() else state.pendingRequests,
                     messages = state.messages.map {
                         if (it.id == bubbleId) {
                             it.copy(parts = it.parts.collapseThinking(), streaming = false)
@@ -281,6 +295,42 @@ class ChatViewModel(
         if (!_state.value.sending) return
         viewModelScope.launch { repository.interrupt(sessionId) }
         streamJob?.cancel()
+    }
+
+    /**
+     * Answers [head] (which must be the current queue head) via [rpc]. Dequeues
+     * [head] synchronously *before* launching the RPC — and only if it is still
+     * the head — so a stray second dispatch for an already-answered request is a
+     * no-op rather than resolving the next queued one. Always dequeues so a
+     * broken request can't wedge the dialog host.
+     */
+    private fun respond(head: InteractiveRequest, rpc: suspend () -> Result<Unit>) {
+        if (_state.value.pendingRequests.firstOrNull() !== head) return
+        _state.update { it.copy(pendingRequests = it.pendingRequests.drop(1)) }
+        viewModelScope.launch {
+            rpc().onFailure { err -> _state.update { it.copy(error = err.toUserMessage()) } }
+        }
+    }
+
+    /** Approval choice: "once", "session", or "deny". */
+    fun respondApproval(choice: String) {
+        val req = _state.value.pendingRequests.firstOrNull() as? InteractiveRequest.Approval ?: return
+        respond(req) { repository.respondApproval(sessionId, choice) }
+    }
+
+    fun respondClarify(answer: String) {
+        val req = _state.value.pendingRequests.firstOrNull() as? InteractiveRequest.Clarify ?: return
+        respond(req) { repository.respondClarify(req.requestId, answer) }
+    }
+
+    fun respondSudo(password: String) {
+        val req = _state.value.pendingRequests.firstOrNull() as? InteractiveRequest.Sudo ?: return
+        respond(req) { repository.respondSudo(req.requestId, password) }
+    }
+
+    fun respondSecret(value: String) {
+        val req = _state.value.pendingRequests.firstOrNull() as? InteractiveRequest.Secret ?: return
+        respond(req) { repository.respondSecret(req.requestId, value) }
     }
 
     fun clearError() = _state.update { it.copy(error = null) }

@@ -8,16 +8,21 @@ import com.hermes.android.data.dto.PatchSessionRequest
 import com.hermes.android.data.dto.SessionDto
 import com.hermes.android.data.dto.SpeakRequest
 import com.hermes.android.data.dto.TranscribeRequest
+import com.hermes.android.data.gateway.ApprovalRequestPayload
 import com.hermes.android.data.gateway.ChatEvent
+import com.hermes.android.data.gateway.ClarifyRequestPayload
 import com.hermes.android.data.gateway.ConnectionState
 import com.hermes.android.data.gateway.DeltaPayload
 import com.hermes.android.data.gateway.ErrorPayload
 import com.hermes.android.data.gateway.GatewayException
 import com.hermes.android.data.gateway.HermesGateway
+import com.hermes.android.data.gateway.InteractiveRequest
 import com.hermes.android.data.gateway.MessageCompletePayload
 import com.hermes.android.data.gateway.ResumeResult
+import com.hermes.android.data.gateway.SecretRequestPayload
 import com.hermes.android.data.gateway.SessionListResult
 import com.hermes.android.data.gateway.StatusPayload
+import com.hermes.android.data.gateway.SudoRequestPayload
 import com.hermes.android.data.gateway.ToolCompletePayload
 import com.hermes.android.data.gateway.ToolStartPayload
 import com.hermes.android.data.model.ChatMessage
@@ -483,6 +488,63 @@ class HermesRepository(
                             ?.let { gson.fromJson(it, DeltaPayload::class.java) }?.text
                         if (!text.isNullOrEmpty()) trySend(ChatEvent.Thinking(text))
                     }
+                    // Interactive requests are NOT gated on `started`: a clarify can
+                    // legitimately precede `message.start`, and dropping it would hang
+                    // the agent (it blocks until we respond). The interrupted-prior-turn
+                    // leak that motivates the gate elsewhere can't happen here — Stop
+                    // calls `session.interrupt`, which clears the session's pending
+                    // prompts server-side, so no stale `*.request` survives a resend.
+                    "approval.request" -> {
+                        val p = ev.payload
+                            ?.let { gson.fromJson(it, ApprovalRequestPayload::class.java) }
+                        trySend(
+                            ChatEvent.Interactive(
+                                InteractiveRequest.Approval(
+                                    command = p?.command.orEmpty(),
+                                    description = p?.description.orEmpty(),
+                                ),
+                            ),
+                        )
+                    }
+                    "clarify.request" -> {
+                        val p = ev.payload
+                            ?.let { gson.fromJson(it, ClarifyRequestPayload::class.java) }
+                        val rid = p?.requestId
+                        if (!rid.isNullOrEmpty()) {
+                            trySend(
+                                ChatEvent.Interactive(
+                                    InteractiveRequest.Clarify(
+                                        requestId = rid,
+                                        question = p.question.orEmpty(),
+                                        choices = p.choices ?: emptyList(),
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+                    "sudo.request" -> {
+                        val rid = ev.payload
+                            ?.let { gson.fromJson(it, SudoRequestPayload::class.java) }?.requestId
+                        if (!rid.isNullOrEmpty()) {
+                            trySend(ChatEvent.Interactive(InteractiveRequest.Sudo(rid)))
+                        }
+                    }
+                    "secret.request" -> {
+                        val p = ev.payload
+                            ?.let { gson.fromJson(it, SecretRequestPayload::class.java) }
+                        val rid = p?.requestId
+                        if (!rid.isNullOrEmpty()) {
+                            trySend(
+                                ChatEvent.Interactive(
+                                    InteractiveRequest.Secret(
+                                        requestId = rid,
+                                        prompt = p.prompt.orEmpty(),
+                                        envVar = p.envVar.orEmpty(),
+                                    ),
+                                ),
+                            )
+                        }
+                    }
                     "message.complete" -> {
                         if (!started) return@collect
                         val p = ev.payload
@@ -523,6 +585,40 @@ class HermesRepository(
     suspend fun interrupt(storedId: String): Result<Unit> = runCatching {
         val live = liveSessionIds[storedId]?.sid ?: return@runCatching
         gateway.call("session.interrupt", mapOf("session_id" to live))
+    }
+
+    /**
+     * Resolves a pending `approval.request` for [storedId]. [choice] is one of
+     * `once` / `session` / `deny` (the gateway also accepts `always`, which the UI
+     * intentionally doesn't offer). Approvals are keyed by session, not request id.
+     */
+    suspend fun respondApproval(storedId: String, choice: String): Result<Unit> = runCatching {
+        val live = resolveLiveSid(storedId)
+        gateway.call("approval.respond", mapOf("session_id" to live, "choice" to choice))
+        Unit
+    }
+
+    /** Answers a pending `clarify.request` identified by [requestId]. */
+    suspend fun respondClarify(requestId: String, answer: String): Result<Unit> =
+        respondById("clarify.respond", requestId, "answer", answer)
+
+    /** Supplies the password for a pending `sudo.request`. Never logged or persisted. */
+    suspend fun respondSudo(requestId: String, password: String): Result<Unit> =
+        respondById("sudo.respond", requestId, "password", password)
+
+    /** Supplies the value for a pending `secret.request`. Never logged or persisted. */
+    suspend fun respondSecret(requestId: String, value: String): Result<Unit> =
+        respondById("secret.respond", requestId, "value", value)
+
+    /** Shared body for the `request_id`-keyed interactive responses. */
+    private suspend fun respondById(
+        method: String,
+        requestId: String,
+        key: String,
+        value: String,
+    ): Result<Unit> = runCatching {
+        gateway.call(method, mapOf("request_id" to requestId, key to value))
+        Unit
     }
 
     /** Transcribes recorded audio to text via Hermes's configured STT provider. */
