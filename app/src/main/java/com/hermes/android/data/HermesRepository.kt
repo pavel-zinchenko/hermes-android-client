@@ -225,7 +225,7 @@ class HermesRepository(
         )
         if (!response.ok) throw IllegalStateException("Transcription failed")
         response.transcript?.trim().orEmpty()
-    }
+    }.recoverCatching { throw VoiceServiceException(VoiceService.SPEECH_TO_TEXT, it) }
 
     /** Synthesizes [text] to speech via Hermes's configured TTS provider chain. */
     suspend fun speak(text: String): Result<DecodedAudio> = runCatching {
@@ -243,8 +243,25 @@ class HermesRepository(
             ?: header.substringBefore(';').ifBlank { "audio/mpeg" }
         val bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
         DecodedAudio(bytes = bytes, mime = mime)
-    }
+    }.recoverCatching { throw VoiceServiceException(VoiceService.TEXT_TO_SPEECH, it) }
 }
+
+/** Which voice service a [VoiceServiceException] refers to. */
+enum class VoiceService(val label: String) {
+    SPEECH_TO_TEXT("Speech-to-text"),
+    TEXT_TO_SPEECH("Text-to-speech"),
+}
+
+/**
+ * Wraps a failure from a voice call so the UI can name the affected [service].
+ * The Hermes audio error body carries the provider's message but not its name, so
+ * this label ("Speech-to-text" / "Text-to-speech") is the best service identifier
+ * the client can attach; the original [cause] still supplies the detail.
+ */
+class VoiceServiceException(
+    val service: VoiceService,
+    override val cause: Throwable,
+) : Exception(cause)
 
 /** Decoded audio payload returned by [HermesRepository.speak], ready for playback. */
 data class DecodedAudio(
