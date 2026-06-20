@@ -11,6 +11,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+hermes-pr.md
+hermes_android_app_techspec.md
+rpc-gateway.md
 
 # Gradle wrapper is bootstrapped, not checked in (see CLAUDE.md):
 #   gradle wrapper --gradle-version 9.3.1

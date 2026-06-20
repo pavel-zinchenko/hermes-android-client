@@ -44,7 +44,15 @@ class SessionsViewModel(
     /** Creates a new session and returns its id via [onCreated] for navigation. */
     fun createSession(onCreated: (String) -> Unit) {
         viewModelScope.launch {
-            repository.createSession()
+            // In streaming mode the session must be created over the gateway so it
+            // inherits the configured model; a REST-created session is stamped with
+            // the "hermes-agent" label that the gateway later rejects.
+            val result = if (repository.streamingEnabled()) {
+                repository.createSessionViaGateway()
+            } else {
+                repository.createSession()
+            }
+            result
                 .onSuccess { session ->
                     refresh()
                     onCreated(session.id)

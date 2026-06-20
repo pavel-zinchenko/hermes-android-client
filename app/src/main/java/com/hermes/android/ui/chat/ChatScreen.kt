@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -115,10 +116,18 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(state.messages, key = { it.id }) { message ->
-                            MessageBubble(message)
+                            if (message.streaming && message.text.isBlank()) {
+                                // Streaming bubble that hasn't received text yet.
+                                TypingBubble(state.statusLine)
+                            } else {
+                                MessageBubble(message)
+                            }
                         }
-                        if (state.sending) {
-                            item(key = "typing") { TypingBubble() }
+                        // Show a typing/status indicator while a turn is in flight
+                        // and no streaming bubble is yet carrying text.
+                        val hasLiveBubble = state.messages.any { it.streaming }
+                        if (state.sending && !hasLiveBubble) {
+                            item(key = "typing") { TypingBubble(state.statusLine) }
                         }
                     }
                 }
@@ -127,11 +136,12 @@ fun ChatScreen(
             MessageInput(
                 value = input,
                 onValueChange = { input = it },
-                enabled = !state.sending,
+                sending = state.sending,
                 onSend = {
                     viewModel.sendMessage(input)
                     input = ""
                 },
+                onStop = viewModel::stop,
             )
         }
     }
@@ -175,7 +185,7 @@ private fun MessageBubble(message: ChatMessage) {
 }
 
 @Composable
-private fun TypingBubble() {
+private fun TypingBubble(statusLine: String? = null) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
@@ -192,7 +202,7 @@ private fun TypingBubble() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = "Hermes is thinking…",
+                    text = statusLine?.takeIf { it.isNotBlank() } ?: "Hermes is thinking…",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -205,8 +215,9 @@ private fun TypingBubble() {
 private fun MessageInput(
     value: String,
     onValueChange: (String) -> Unit,
-    enabled: Boolean,
+    sending: Boolean,
     onSend: () -> Unit,
+    onStop: () -> Unit,
 ) {
     Surface(
         tonalElevation = 3.dp,
@@ -224,23 +235,38 @@ private fun MessageInput(
                 onValueChange = onValueChange,
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Message Hermes") },
+                enabled = !sending,
                 maxLines = 5,
             )
-            val canSend = enabled && value.isNotBlank()
-            IconButton(
-                onClick = onSend,
-                enabled = canSend,
-                modifier = Modifier.padding(start = 4.dp),
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send",
-                    tint = if (canSend) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
+            if (sending) {
+                // While a turn streams, the trailing control becomes Stop.
+                IconButton(
+                    onClick = onStop,
+                    modifier = Modifier.padding(start = 4.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Stop,
+                        contentDescription = "Stop",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
+            } else {
+                val canSend = value.isNotBlank()
+                IconButton(
+                    onClick = onSend,
+                    enabled = canSend,
+                    modifier = Modifier.padding(start = 4.dp),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (canSend) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
             }
         }
     }

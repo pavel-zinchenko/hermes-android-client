@@ -23,6 +23,7 @@ data class SettingsUiState(
     val voiceServerUrl: String = "",
     val voiceApiKey: String = "",
     val thinkingSoundUri: String = "",
+    val streamingEnabled: Boolean = false,
     val loaded: Boolean = false,
     val saved: Boolean = false,
     val testResult: TestResult = TestResult.Idle,
@@ -46,6 +47,7 @@ class SettingsViewModel(
                     voiceServerUrl = current.voiceServerUrl,
                     voiceApiKey = current.voiceApiKey,
                     thinkingSoundUri = current.thinkingSoundUri,
+                    streamingEnabled = current.streamingEnabled,
                     loaded = true,
                 )
             }
@@ -71,6 +73,12 @@ class SettingsViewModel(
     }
 
     fun clearThinkingSound() = setThinkingSound("")
+
+    /** Persists the streaming-transport choice immediately. */
+    fun setStreamingEnabled(enabled: Boolean) {
+        _state.update { it.copy(streamingEnabled = enabled) }
+        viewModelScope.launch { repository.updateStreaming(enabled) }
+    }
 
     fun save() {
         viewModelScope.launch {

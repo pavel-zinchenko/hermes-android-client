@@ -16,4 +16,6 @@ data class ChatMessage(
     val id: String,
     val sender: Sender,
     val text: String,
+    /** True while this (assistant) message is still being streamed in. */
+    val streaming: Boolean = false,
 )

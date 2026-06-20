@@ -3,6 +3,7 @@ package com.hermes.android.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -27,6 +28,12 @@ data class HermesSettings(
      * Empty = no thinking sound.
      */
     val thinkingSoundUri: String = "",
+    /**
+     * When true, chat uses the streaming RPC gateway (WebSocket on the dashboard
+     * server) for sending and history; when false, the blocking REST api_server
+     * path is used. Both transports are kept while the Hermes API evolves.
+     */
+    val streamingEnabled: Boolean = false,
 ) {
     /** Normalized base URL guaranteed to end with a single trailing slash. */
     val normalizedBaseUrl: String
@@ -35,6 +42,24 @@ data class HermesSettings(
     /** Normalized voice server URL guaranteed to end with a single trailing slash. */
     val normalizedVoiceServerUrl: String
         get() = voiceServerUrl.ensureTrailingSlash()
+
+    /**
+     * WebSocket URL of the gateway, derived from the (dashboard/voice) server URL:
+     * `http(s)://host:9119/` → `ws(s)://host:9119/api/ws?token=<voiceApiKey>`. The
+     * gateway accepts the `?token=` query credential in loopback mode.
+     */
+    val gatewayWsUrl: String
+        get() {
+            val base = normalizedVoiceServerUrl
+                .replaceFirst(Regex("^http://", RegexOption.IGNORE_CASE), "ws://")
+                .replaceFirst(Regex("^https://", RegexOption.IGNORE_CASE), "wss://")
+            val suffix = if (voiceApiKey.isNotBlank()) {
+                "api/ws?token=${java.net.URLEncoder.encode(voiceApiKey, "UTF-8")}"
+            } else {
+                "api/ws"
+            }
+            return base + suffix
+        }
 
     companion object {
         const val DEFAULT_BASE_URL = "http://127.0.0.1:8642/"
@@ -53,6 +78,7 @@ class SettingsStore(private val context: Context) {
         val VOICE_SERVER_URL = stringPreferencesKey("voice_server_url")
         val VOICE_API_KEY = stringPreferencesKey("voice_api_key")
         val THINKING_SOUND_URI = stringPreferencesKey("thinking_sound_uri")
+        val STREAMING_ENABLED = booleanPreferencesKey("streaming_enabled")
     }
 
     val settings: Flow<HermesSettings> = context.dataStore.data.map { prefs ->
@@ -64,6 +90,7 @@ class SettingsStore(private val context: Context) {
                 ?: HermesSettings.DEFAULT_VOICE_SERVER_URL,
             voiceApiKey = prefs[Keys.VOICE_API_KEY].orEmpty(),
             thinkingSoundUri = prefs[Keys.THINKING_SOUND_URI].orEmpty(),
+            streamingEnabled = prefs[Keys.STREAMING_ENABLED] ?: false,
         )
     }
 
@@ -83,5 +110,9 @@ class SettingsStore(private val context: Context) {
 
     suspend fun updateThinkingSound(uri: String) {
         context.dataStore.edit { prefs -> prefs[Keys.THINKING_SOUND_URI] = uri.trim() }
+    }
+
+    suspend fun updateStreaming(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[Keys.STREAMING_ENABLED] = enabled }
     }
 }
