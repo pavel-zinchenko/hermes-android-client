@@ -84,3 +84,43 @@ data class ChatResponse(
     val message: ChatMessageDto? = null,
     val usage: UsageDto? = null,
 )
+
+// --- Voice (STT/TTS) ---------------------------------------------------------
+// Mirror the audio endpoints exposed by the Hermes dashboard web server
+// (hermes_cli/web_server.py) and — once the upstream PR lands — the gateway
+// api_server. The shapes are identical on both servers; see hermes-pr.md.
+
+/** Request for POST /api/audio/transcribe. */
+data class TranscribeRequest(
+    @SerializedName("data_url") val dataUrl: String,
+    @SerializedName("mime_type") val mimeType: String,
+)
+
+/** Response for POST /api/audio/transcribe. */
+data class TranscribeResponse(
+    val ok: Boolean = false,
+    val transcript: String? = null,
+    val provider: String? = null,
+)
+
+/** Request for POST /api/audio/speak. */
+data class SpeakRequest(
+    val text: String,
+)
+
+/** Response for POST /api/audio/speak. The audio is a base64 `data:` URL. */
+data class SpeakResponse(
+    val ok: Boolean = false,
+    @SerializedName("data_url") val dataUrl: String? = null,
+    @SerializedName("mime_type") val mimeType: String? = null,
+    val provider: String? = null,
+)
+
+/** Subset of GET /v1/capabilities used to detect gateway-native audio support. */
+data class CapabilitiesDto(
+    val features: FeaturesDto? = null,
+)
+
+data class FeaturesDto(
+    @SerializedName("audio_api") val audioApi: Boolean = false,
+)

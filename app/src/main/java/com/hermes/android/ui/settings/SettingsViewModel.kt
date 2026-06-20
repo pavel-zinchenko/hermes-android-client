@@ -20,6 +20,9 @@ sealed interface TestResult {
 data class SettingsUiState(
     val baseUrl: String = "",
     val apiKey: String = "",
+    val voiceServerUrl: String = "",
+    val voiceApiKey: String = "",
+    val thinkingSoundUri: String = "",
     val loaded: Boolean = false,
     val saved: Boolean = false,
     val testResult: TestResult = TestResult.Idle,
@@ -37,7 +40,14 @@ class SettingsViewModel(
         viewModelScope.launch {
             val current = repository.currentSettings()
             _state.update {
-                it.copy(baseUrl = current.baseUrl, apiKey = current.apiKey, loaded = true)
+                it.copy(
+                    baseUrl = current.baseUrl,
+                    apiKey = current.apiKey,
+                    voiceServerUrl = current.voiceServerUrl,
+                    voiceApiKey = current.voiceApiKey,
+                    thinkingSoundUri = current.thinkingSoundUri,
+                    loaded = true,
+                )
             }
         }
     }
@@ -48,10 +58,25 @@ class SettingsViewModel(
     fun onApiKeyChange(value: String) =
         _state.update { it.copy(apiKey = value, saved = false, testResult = TestResult.Idle) }
 
+    fun onVoiceServerUrlChange(value: String) =
+        _state.update { it.copy(voiceServerUrl = value, saved = false) }
+
+    fun onVoiceApiKeyChange(value: String) =
+        _state.update { it.copy(voiceApiKey = value, saved = false) }
+
+    /** Persists the picked thinking-sound URI immediately (it carries a permission). */
+    fun setThinkingSound(uri: String) {
+        _state.update { it.copy(thinkingSoundUri = uri) }
+        viewModelScope.launch { repository.updateThinkingSound(uri) }
+    }
+
+    fun clearThinkingSound() = setThinkingSound("")
+
     fun save() {
         viewModelScope.launch {
             val s = _state.value
             repository.updateSettings(s.baseUrl, s.apiKey)
+            repository.updateVoiceSettings(s.voiceServerUrl, s.voiceApiKey)
             _state.update { it.copy(saved = true) }
         }
     }

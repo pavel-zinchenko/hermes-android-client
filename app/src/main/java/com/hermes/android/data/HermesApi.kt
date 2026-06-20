@@ -1,5 +1,6 @@
 package com.hermes.android.data
 
+import com.hermes.android.data.dto.CapabilitiesDto
 import com.hermes.android.data.dto.ChatRequest
 import com.hermes.android.data.dto.ChatResponse
 import com.hermes.android.data.dto.CreateSessionRequest
@@ -25,6 +26,10 @@ interface HermesApi {
 
     @GET("health")
     suspend fun health(): HealthDto
+
+    /** Gateway feature flags; `features.audio_api` decides voice routing (A vs B). */
+    @GET("v1/capabilities")
+    suspend fun capabilities(): CapabilitiesDto
 
     @GET("api/sessions")
     suspend fun listSessions(

@@ -1,10 +1,13 @@
 package com.hermes.android.data
 
+import android.util.Base64
 import com.hermes.android.data.dto.ChatRequest
 import com.hermes.android.data.dto.CreateSessionRequest
 import com.hermes.android.data.dto.MessageDto
 import com.hermes.android.data.dto.PatchSessionRequest
 import com.hermes.android.data.dto.SessionDto
+import com.hermes.android.data.dto.SpeakRequest
+import com.hermes.android.data.dto.TranscribeRequest
 import com.hermes.android.data.model.ChatMessage
 import com.hermes.android.data.model.ChatSession
 import com.hermes.android.data.model.Sender
@@ -54,11 +57,44 @@ class HermesRepository(
         .callTimeout(190, TimeUnit.SECONDS)
         .build()
 
+    /**
+     * The Bearer key for the audio client. Set by [resolveAudioTarget] before each
+     * audio call so [AuthInterceptor] (which reads synchronously on the OkHttp
+     * thread) uses the right token for the resolved server (9119 vs gateway).
+     */
+    @Volatile
+    private var audioKey: String = ""
+
+    private val audioOkHttp: OkHttpClient = OkHttpClient.Builder()
+        .addInterceptor(AuthInterceptor { audioKey })
+        .addInterceptor(
+            HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
+        )
+        .connectTimeout(10, TimeUnit.SECONDS)
+        // TTS synthesis of a long reply can take a while.
+        .readTimeout(120, TimeUnit.SECONDS)
+        .callTimeout(130, TimeUnit.SECONDS)
+        .build()
+
     @Volatile
     private var cachedBaseUrl: String? = null
 
     @Volatile
     private var cachedApi: HermesApi? = null
+
+    @Volatile
+    private var cachedAudioBaseUrl: String? = null
+
+    @Volatile
+    private var cachedAudioApi: HermesAudioApi? = null
+
+    /**
+     * Cached result of the gateway `audio_api` capability probe (null = not yet
+     * probed). Decides whether voice routes to the gateway (B) or the separately
+     * configured voice server (A). Reset by [updateSettings].
+     */
+    @Volatile
+    private var gatewayAudioApi: Boolean? = null
 
     /**
      * Builds (memoized per base URL) a Retrofit client bound to the **current
@@ -86,11 +122,69 @@ class HermesRepository(
         return api
     }
 
+    /**
+     * Builds (memoized per base URL) a Retrofit client for the audio (STT/TTS)
+     * endpoints, bound to [baseUrl]. The Bearer key is supplied out-of-band via
+     * [audioKey] (set by [resolveAudioTarget]) because it varies with the target.
+     */
+    private fun audioApi(baseUrl: String): HermesAudioApi {
+        val existing = cachedAudioApi
+        if (existing != null && cachedAudioBaseUrl == baseUrl) return existing
+        val api = Retrofit.Builder()
+            .baseUrl(baseUrl)
+            .client(audioOkHttp)
+            .addConverterFactory(GsonConverterFactory.create(gson))
+            .build()
+            .create(HermesAudioApi::class.java)
+        cachedAudioBaseUrl = baseUrl
+        cachedAudioApi = api
+        return api
+    }
+
+    /**
+     * Resolves where audio calls go and primes [audioKey]. If the gateway reports
+     * `features.audio_api` (option B, after the upstream PR lands), voice rides the
+     * main gateway with the main key; otherwise it uses the separately configured
+     * voice server (option A, the dashboard web server on 9119). The probe result
+     * is cached for the session and reset by [updateSettings] / [updateVoiceSettings].
+     */
+    private suspend fun resolveAudioTarget(): HermesAudioApi {
+        val settings = settingsStore.settings.first()
+        _settings.value = settings
+
+        if (gatewayAudioApi == null) {
+            gatewayAudioApi = runCatching { api().capabilities() }
+                .getOrNull()?.features?.audioApi ?: false
+        }
+
+        val baseUrl: String
+        if (gatewayAudioApi == true) {
+            baseUrl = settings.normalizedBaseUrl
+            audioKey = settings.apiKey
+        } else {
+            baseUrl = settings.normalizedVoiceServerUrl
+            audioKey = settings.voiceApiKey
+        }
+        return audioApi(baseUrl)
+    }
+
     /** Reads the persisted settings directly (avoids the StateFlow seed race). */
     suspend fun currentSettings(): HermesSettings = settingsStore.settings.first()
 
-    suspend fun updateSettings(baseUrl: String, apiKey: String) =
+    suspend fun updateSettings(baseUrl: String, apiKey: String) {
+        gatewayAudioApi = null // re-probe against the new gateway
         settingsStore.update(baseUrl, apiKey)
+    }
+
+    suspend fun updateVoiceSettings(voiceServerUrl: String, voiceApiKey: String) {
+        gatewayAudioApi = null
+        settingsStore.updateVoice(voiceServerUrl, voiceApiKey)
+    }
+
+    suspend fun updateThinkingSound(uri: String) = settingsStore.updateThinkingSound(uri)
+
+    /** Content URI of the looped "thinking" sound, or empty if none is set. */
+    suspend fun thinkingSoundUri(): String = settingsStore.settings.first().thinkingSoundUri
 
     /** Lightweight reachability probe; true iff /health responds with status ok. */
     suspend fun checkHealth(): Result<Boolean> = runCatching {
@@ -122,7 +216,41 @@ class HermesRepository(
         val response = api().sendMessage(sessionId, ChatRequest(text))
         response.message?.content.orEmpty()
     }
+
+    /** Transcribes recorded audio to text via Hermes's configured STT provider. */
+    suspend fun transcribe(audio: ByteArray, mime: String): Result<String> = runCatching {
+        val encoded = Base64.encodeToString(audio, Base64.NO_WRAP)
+        val response = resolveAudioTarget().transcribe(
+            TranscribeRequest(dataUrl = "data:$mime;base64,$encoded", mimeType = mime)
+        )
+        if (!response.ok) throw IllegalStateException("Transcription failed")
+        response.transcript?.trim().orEmpty()
+    }
+
+    /** Synthesizes [text] to speech via Hermes's configured TTS provider chain. */
+    suspend fun speak(text: String): Result<DecodedAudio> = runCatching {
+        val response = resolveAudioTarget().speak(SpeakRequest(text))
+        val dataUrl = response.dataUrl
+        if (!response.ok || dataUrl.isNullOrBlank()) {
+            throw IllegalStateException("Speech synthesis failed")
+        }
+        val comma = dataUrl.indexOf(',')
+        if (!dataUrl.startsWith("data:") || comma < 0) {
+            throw IllegalStateException("Malformed audio data URL")
+        }
+        val header = dataUrl.substring(5, comma) // e.g. "audio/mpeg;base64"
+        val mime = response.mimeType?.takeIf { it.isNotBlank() }
+            ?: header.substringBefore(';').ifBlank { "audio/mpeg" }
+        val bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
+        DecodedAudio(bytes = bytes, mime = mime)
+    }
 }
+
+/** Decoded audio payload returned by [HermesRepository.speak], ready for playback. */
+data class DecodedAudio(
+    val bytes: ByteArray,
+    val mime: String,
+)
 
 private fun SessionDto.toModel(): ChatSession = ChatSession(
     id = id,

@@ -10,6 +10,7 @@ import com.hermes.android.ui.chat.ChatScreen
 import com.hermes.android.ui.sessions.SessionsScreen
 import com.hermes.android.ui.settings.SettingsScreen
 import com.hermes.android.ui.startup.ConnectionGate
+import com.hermes.android.ui.voice.VoiceScreen
 
 object Routes {
     const val GATE = "gate"
@@ -17,6 +18,8 @@ object Routes {
     const val SETTINGS = "settings"
     const val CHAT = "chat/{sessionId}"
     fun chat(sessionId: String) = "chat/$sessionId"
+    const val VOICE = "voice/{sessionId}"
+    fun voice(sessionId: String) = "voice/$sessionId"
 }
 
 @Composable
@@ -45,8 +48,19 @@ fun HermesNavHost() {
         composable(
             route = Routes.CHAT,
             arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
+        ) { entry ->
+            val sessionId = entry.arguments?.getString("sessionId").orEmpty()
+            ChatScreen(
+                onBack = { navController.popBackStack() },
+                onOpenVoice = { navController.navigate(Routes.voice(sessionId)) },
+            )
+        }
+
+        composable(
+            route = Routes.VOICE,
+            arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
         ) {
-            ChatScreen(onBack = { navController.popBackStack() })
+            VoiceScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.SETTINGS) {
