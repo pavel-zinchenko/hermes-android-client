@@ -9,6 +9,7 @@ import androidx.navigation.navigation
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hermes.android.ui.chat.ChatScreen
 import com.hermes.android.ui.chat.ChatSessionViewModel
+import com.hermes.android.ui.models.ModelsScreen
 import com.hermes.android.ui.schedule.ScheduleScreen
 import com.hermes.android.ui.sessions.SessionsScreen
 import com.hermes.android.ui.settings.SettingsScreen
@@ -19,6 +20,7 @@ object Routes {
     const val GATE = "gate"
     const val SESSIONS = "sessions"
     const val SETTINGS = "settings"
+    const val MODELS = "models"
     const val SCHEDULE = "schedule"
     // Chat + voice live in one nested graph keyed by sessionId so they can share a
     // single ViewModel (scoped to this graph's back stack entry).
@@ -80,7 +82,14 @@ fun HermesNavHost() {
         }
 
         composable(Routes.SETTINGS) {
-            SettingsScreen(onBack = { navController.popBackStack() })
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenModels = { navController.navigate(Routes.MODELS) },
+            )
+        }
+
+        composable(Routes.MODELS) {
+            ModelsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.SCHEDULE) {

@@ -1,6 +1,7 @@
 package com.hermes.android.data
 
 import android.util.Base64
+import com.hermes.android.data.dto.ModelSetRequest
 import com.hermes.android.data.dto.SpeakRequest
 import com.hermes.android.data.dto.TranscribeRequest
 import com.hermes.android.data.gateway.ApprovalRequestPayload
@@ -13,6 +14,7 @@ import com.hermes.android.data.gateway.GatewayException
 import com.hermes.android.data.gateway.HermesGateway
 import com.hermes.android.data.gateway.InteractiveRequest
 import com.hermes.android.data.gateway.MessageCompletePayload
+import com.hermes.android.data.gateway.ModelOptionsResult
 import com.hermes.android.data.gateway.ResumeResult
 import com.hermes.android.data.gateway.SecretRequestPayload
 import com.hermes.android.data.gateway.SessionListResult
@@ -222,6 +224,62 @@ class HermesRepository(
     /** Deletes a cron job (DELETE /api/cron/jobs/{id}). */
     suspend fun deleteScheduledTask(id: String): Result<Unit> = runCatching {
         api().deleteCronJob(id)
+    }
+
+    // --- Model configuration ----------------------------------------------
+    // Listing providers and managing keys ride the gateway WS (model.options /
+    // model.save_key / model.disconnect, which write ~/.hermes/.env in the same
+    // dashboard process). Selecting the active model has no gateway equivalent,
+    // so it uses REST POST /api/model/set. See the plan / HERMES_INTEGRATION.md.
+
+    /** Lists LLM providers with their models and auth state (`model.options`). */
+    suspend fun listModelOptions(): Result<ModelOptionsResult> = runCatching {
+        val settings = settingsStore.settings.first()
+        _settings.value = settings
+        gateway.connect(settings.gatewayWsUrl)
+        gson.fromJson(gateway.call("model.options"), ModelOptionsResult::class.java)
+    }
+
+    /**
+     * Saves an API key for a provider (`model.save_key`), persisting it to
+     * `~/.hermes/.env` and the live process env. Throws [GatewayException] if the
+     * provider uses non-API-key auth or the install is managed/read-only.
+     */
+    suspend fun saveProviderKey(slug: String, apiKey: String): Result<Unit> = runCatching {
+        val settings = settingsStore.settings.first()
+        _settings.value = settings
+        gateway.connect(settings.gatewayWsUrl)
+        gateway.call("model.save_key", mapOf("slug" to slug, "api_key" to apiKey))
+        Unit
+    }
+
+    /** Removes a provider's stored credentials (`model.disconnect`). */
+    suspend fun disconnectProvider(slug: String): Result<Unit> = runCatching {
+        val settings = settingsStore.settings.first()
+        _settings.value = settings
+        gateway.connect(settings.gatewayWsUrl)
+        gateway.call("model.disconnect", mapOf("slug" to slug))
+        Unit
+    }
+
+    /**
+     * Selects the active main model (POST /api/model/set). The server may answer
+     * with `confirm_required` for an expensive model; the caller re-invokes with
+     * [confirmExpensive] = true to proceed. Persists to `config.yaml`, so it takes
+     * effect for new sessions.
+     */
+    suspend fun setMainModel(
+        provider: String,
+        model: String,
+        confirmExpensive: Boolean,
+    ): Result<com.hermes.android.data.dto.ModelSetResponse> = runCatching {
+        api().setModel(
+            ModelSetRequest(
+                provider = provider,
+                model = model,
+                confirmExpensive = confirmExpensive,
+            )
+        )
     }
 
     /**

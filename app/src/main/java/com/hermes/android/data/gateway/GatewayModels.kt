@@ -158,6 +158,42 @@ data class CreateSessionResult(
     @SerializedName("stored_session_id") val storedSessionId: String? = null,
 )
 
+// --- Model configuration (model.options / model.save_key / model.disconnect) --
+
+/**
+ * Result of `model.options`: the available providers plus the currently selected
+ * `model`/`provider`. The gateway is invoked with picker hints, so each provider
+ * row carries auth state (`authenticated`, `auth_type`, `key_env`, `warning`) and,
+ * when present, per-model `pricing`. Only the lean subset the UI renders is decoded;
+ * Gson ignores the rest (`total_models`, `capabilities`, `is_user_defined`, …).
+ */
+data class ModelOptionsResult(
+    val providers: List<ModelProviderRow> = emptyList(),
+    val model: String? = null,
+    val provider: String? = null,
+)
+
+/** One provider row from `model.options` (and the refreshed row from `model.save_key`). */
+data class ModelProviderRow(
+    val slug: String = "",
+    val name: String = "",
+    @SerializedName("is_current") val isCurrent: Boolean = false,
+    val models: List<String> = emptyList(),
+    val authenticated: Boolean = false,
+    @SerializedName("auth_type") val authType: String? = null,
+    @SerializedName("key_env") val keyEnv: String? = null,
+    val warning: String? = null,
+    val pricing: Map<String, ModelPrice>? = null,
+)
+
+/** Per-model pricing under [ModelProviderRow.pricing]; values are pre-formatted ("$3.00"). */
+data class ModelPrice(
+    val input: String? = null,
+    val output: String? = null,
+    val cache: String? = null,
+    val free: Boolean = false,
+)
+
 // --- Repository → ViewModel contract -----------------------------------------
 
 /**

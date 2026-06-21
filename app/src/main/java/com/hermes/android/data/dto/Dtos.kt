@@ -45,6 +45,36 @@ data class SpeakResponse(
     val provider: String? = null,
 )
 
+// --- Model selection ---------------------------------------------------------
+// Mirror POST /api/model/set (web_server.py). Saving a provider key and listing
+// providers ride the gateway WS (model.save_key / model.options); selecting the
+// active model has no gateway equivalent, so it uses this REST endpoint.
+
+/**
+ * Request for POST /api/model/set. We only ever set the primary slot, so [scope]
+ * is fixed to "main". [confirmExpensive] is re-sent as true after the user accepts
+ * the expensive-model warning.
+ */
+data class ModelSetRequest(
+    val provider: String,
+    val model: String,
+    val scope: String = "main",
+    @SerializedName("confirm_expensive_model") val confirmExpensive: Boolean = false,
+)
+
+/**
+ * Response for POST /api/model/set. On success `ok` is true. If the model is
+ * flagged expensive the server returns `ok=false` with `confirm_required=true` and
+ * a `confirm_message` to show before re-posting with `confirmExpensive=true`.
+ */
+data class ModelSetResponse(
+    val ok: Boolean = false,
+    val provider: String? = null,
+    val model: String? = null,
+    @SerializedName("confirm_required") val confirmRequired: Boolean = false,
+    @SerializedName("confirm_message") val confirmMessage: String? = null,
+)
+
 // --- Cron / scheduled tasks --------------------------------------------------
 // Mirror the cron job shape returned by GET /api/cron/jobs (web_server.py,
 // backed by cron/jobs.py). Only the fields the app needs to mirror a job into a

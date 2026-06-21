@@ -2,8 +2,12 @@ package com.hermes.android.data
 
 import com.hermes.android.data.dto.CronJobDto
 import com.hermes.android.data.dto.HealthDto
+import com.hermes.android.data.dto.ModelSetRequest
+import com.hermes.android.data.dto.ModelSetResponse
+import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -26,4 +30,8 @@ interface HermesApi {
     /** Deletes a cron job (DELETE /api/cron/jobs/{id}). */
     @DELETE("api/cron/jobs/{id}")
     suspend fun deleteCronJob(@Path("id") id: String)
+
+    /** Selects the active main model (POST /api/model/set). */
+    @POST("api/model/set")
+    suspend fun setModel(@Body body: ModelSetRequest): ModelSetResponse
 }
