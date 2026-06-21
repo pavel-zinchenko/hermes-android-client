@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Reminders: post notifications, schedule exact alarms, re-arm after reboot. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".HermesApp"
@@ -25,6 +29,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Fires a reminder notification when a mirrored cron alarm goes off.
+             Triggered only by this app's alarm PendingIntent, so not exported. -->
+        <receiver
+            android:name=".schedule.ReminderReceiver"
+            android:exported="false" />
+
+        <!-- Re-arms persisted reminder alarms after reboot. BOOT_COMPLETED is a
+             protected system broadcast, so exported is safe/required. -->
+        <receiver
+            android:name=".schedule.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

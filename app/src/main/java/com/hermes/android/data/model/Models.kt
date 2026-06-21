@@ -10,6 +10,25 @@ data class ChatSession(
     val preview: String?,
 )
 
+/**
+ * A Hermes cron job, filtered down to what the app needs to mirror it into a
+ * local Android alarm + notification. Built from `CronJobDto`; only active
+ * local-delivery jobs with a future [nextRunAtMs] are surfaced.
+ */
+data class ScheduledTask(
+    val id: String,
+    /** Human title shown in the list and the notification. */
+    val name: String,
+    /** Human schedule description for the row subtitle (e.g. "every 2h", "0 9 * * *"). */
+    val scheduleDisplay: String,
+    /** Schedule kind: "once" / "interval" / "cron". */
+    val kind: String,
+    /** Absolute next fire time, epoch millis (UTC). */
+    val nextRunAtMs: Long,
+    /** True for interval/cron jobs (fires more than once). */
+    val recurring: Boolean,
+)
+
 enum class Sender { USER, ASSISTANT }
 
 /** Lifecycle of a single tool invocation within an assistant turn. */

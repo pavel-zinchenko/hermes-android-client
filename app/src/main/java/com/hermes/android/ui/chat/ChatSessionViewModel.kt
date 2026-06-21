@@ -99,6 +99,12 @@ class ChatSessionViewModel(
     private val thinkingSound: ThinkingSoundPlayer,
     private val onDeviceTts: OnDeviceTts,
     savedStateHandle: SavedStateHandle,
+    /**
+     * Invoked when a turn finishes, so the app can re-sync reminders: the agent
+     * may have just created a cron job (e.g. "remind me at 2pm"), and we want the
+     * local alarm armed immediately while the connection is still up.
+     */
+    private val onTurnComplete: () -> Unit = {},
 ) : ViewModel() {
 
     val sessionId: String = checkNotNull(savedStateHandle["sessionId"]) {
@@ -181,7 +187,10 @@ class ChatSessionViewModel(
                             _state.update { it.copy(statusLine = event.text.ifBlank { null }) }
                         is ChatEvent.Interactive ->
                             _state.update { it.copy(pendingRequests = it.pendingRequests + event.request) }
-                        is ChatEvent.Complete -> finishBubble(bubbleId, event.text)
+                        is ChatEvent.Complete -> {
+                            finishBubble(bubbleId, event.text)
+                            onTurnComplete()
+                        }
                         is ChatEvent.Failure -> failStreamTurn(bubbleId, event.message)
                     }
                 }
@@ -428,6 +437,7 @@ class ChatSessionViewModel(
                             // later press must NOT interrupt an idle session.
                             serverTurnActive = false
                             finishBubble(bubbleId, event.text)
+                            onTurnComplete()
                             chunker.drain()?.let { sentences.send(it); spoke = true }
                             // Nothing was streamed as deltas (rare) → speak the
                             // authoritative final text so the turn isn't silent.

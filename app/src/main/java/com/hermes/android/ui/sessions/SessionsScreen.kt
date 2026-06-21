@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.DateRange
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
@@ -45,6 +46,7 @@ import com.hermes.android.ui.AppViewModelProvider
 fun SessionsScreen(
     onOpenChat: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenSchedule: () -> Unit,
     viewModel: SessionsViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -64,6 +66,9 @@ fun SessionsScreen(
                 actions = {
                     IconButton(onClick = viewModel::refresh) {
                         Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
+                    }
+                    IconButton(onClick = onOpenSchedule) {
+                        Icon(Icons.Outlined.DateRange, contentDescription = "Schedule")
                     }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Outlined.Settings, contentDescription = "Settings")

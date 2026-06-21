@@ -22,6 +22,7 @@ import com.hermes.android.data.gateway.ToolCompletePayload
 import com.hermes.android.data.gateway.ToolStartPayload
 import com.hermes.android.data.model.ChatMessage
 import com.hermes.android.data.model.ChatSession
+import com.hermes.android.data.model.ScheduledTask
 import com.hermes.android.data.model.Sender
 import com.google.gson.GsonBuilder
 import kotlinx.coroutines.CoroutineScope
@@ -203,6 +204,24 @@ class HermesRepository(
     /** Lightweight reachability probe; true iff /health responds with status ok. */
     suspend fun checkHealth(): Result<Boolean> = runCatching {
         api().health().status.equals("ok", ignoreCase = true)
+    }
+
+    /**
+     * Lists the cron jobs the app should mirror into local Android reminders:
+     * active (`enabled`, not `completed`) jobs delivered locally (`deliver ==
+     * "local"`) whose next fire is still in the future. We use `deliver == "local"`
+     * as the "this is a phone reminder" marker so agent jobs that deliver to a chat
+     * platform (Telegram/etc.) don't turn into phone notifications. Returns the
+     * single upcoming fire (`next_run_at`) per job; recurring jobs are re-armed for
+     * their following occurrence on the next sync.
+     */
+    suspend fun listScheduledTasks(): Result<List<ScheduledTask>> = runCatching {
+        api().listCronJobs().toScheduledTasks()
+    }
+
+    /** Deletes a cron job (DELETE /api/cron/jobs/{id}). */
+    suspend fun deleteScheduledTask(id: String): Result<Unit> = runCatching {
+        api().deleteCronJob(id)
     }
 
     /**

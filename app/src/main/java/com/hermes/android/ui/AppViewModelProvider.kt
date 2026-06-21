@@ -10,6 +10,7 @@ import com.hermes.android.audio.OnDeviceTts
 import com.hermes.android.audio.ThinkingSoundPlayer
 import com.hermes.android.audio.VoiceRecorder
 import com.hermes.android.ui.chat.ChatSessionViewModel
+import com.hermes.android.ui.schedule.ScheduleViewModel
 import com.hermes.android.ui.sessions.SessionsViewModel
 import com.hermes.android.ui.settings.SettingsViewModel
 import com.hermes.android.ui.startup.ConnectionViewModel
@@ -26,6 +27,10 @@ object AppViewModelProvider {
         initializer { SettingsViewModel(extrasApp(this).repository) }
         initializer {
             val app = extrasApp(this)
+            ScheduleViewModel(app.repository, app.reminderScheduler)
+        }
+        initializer {
+            val app = extrasApp(this)
             ChatSessionViewModel(
                 repository = app.repository,
                 recorder = VoiceRecorder(app),
@@ -33,6 +38,7 @@ object AppViewModelProvider {
                 thinkingSound = ThinkingSoundPlayer(app),
                 onDeviceTts = OnDeviceTts(app),
                 savedStateHandle = createSavedStateHandle(),
+                onTurnComplete = { app.syncReminders() },
             )
         }
     }
