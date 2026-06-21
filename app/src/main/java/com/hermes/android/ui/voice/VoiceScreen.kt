@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,7 +56,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hermes.android.data.model.ChatMessage
 import com.hermes.android.data.model.Sender
+import com.hermes.android.data.model.TurnPart
 import com.hermes.android.ui.AppViewModelProvider
+import com.hermes.android.ui.chat.AssistantPartsMessage
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -87,8 +90,33 @@ fun VoiceScreen(
         }
     }
 
-    LaunchedEffect(state.messages.size) {
-        if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.size - 1)
+    // Only auto-follow when already at the bottom; if the user scrolled up to read,
+    // don't yank them back down mid-stream.
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last == null || last.index >= info.totalItemsCount - 2
+        }
+    }
+    // A signal that grows as the streaming turn's content does (deltas, thinking,
+    // tool completion), so we re-pin on every chunk — not just on a new message —
+    // keeping the end of a growing answer in view above the talk button.
+    val streamSignal = state.messages.lastOrNull()?.let { m ->
+        m.text.length + m.parts.sumOf { part ->
+            when (part) {
+                is TurnPart.Text -> part.text.length
+                is TurnPart.Thinking -> part.text.length
+                is TurnPart.Tool -> part.state.ordinal + 1
+            }
+        }
+    } ?: 0
+
+    LaunchedEffect(state.messages.size, streamSignal) {
+        if (!atBottom || state.messages.isEmpty()) return@LaunchedEffect
+        // Large offset clamps to content end, so the newest line of a tall, still
+        // growing message shows at the bottom of the list rather than below the fold.
+        listState.scrollToItem(state.messages.size - 1, 1_000_000)
     }
     LaunchedEffect(state.error) {
         state.error?.let {
@@ -132,7 +160,16 @@ fun VoiceScreen(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(state.messages, key = { it.id }) { VoiceBubble(it) }
+                        items(state.messages, key = { it.id }) { message ->
+                            // Assistant turns stream as ordered parts (thinking /
+                            // tool / text), shown with the same UI as text chat;
+                            // user turns stay simple bubbles.
+                            if (message.parts.isNotEmpty()) {
+                                AssistantPartsMessage(message) { viewModel.toggleThinking(message.id) }
+                            } else {
+                                VoiceBubble(message)
+                            }
+                        }
                     }
                 }
             }
@@ -169,9 +206,7 @@ private fun TalkButton(
     onPressEnd: () -> Unit,
 ) {
     val recording = phase == VoicePhase.RECORDING
-    val busy = phase == VoicePhase.TRANSCRIBING ||
-        phase == VoicePhase.THINKING ||
-        phase == VoicePhase.SPEAKING
+    val busy = phase == VoicePhase.TRANSCRIBING || phase == VoicePhase.RESPONDING
     val color = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
 
     Box(
@@ -219,8 +254,7 @@ private fun VoicePhase.label(): String = when (this) {
     VoicePhase.IDLE -> "Hold to talk"
     VoicePhase.RECORDING -> "Listening…"
     VoicePhase.TRANSCRIBING -> "Transcribing…"
-    VoicePhase.THINKING -> "Hermes is thinking…"
-    VoicePhase.SPEAKING -> "Speaking…"
+    VoicePhase.RESPONDING -> "Hermes is responding…"
 }
 
 @Composable

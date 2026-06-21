@@ -3,6 +3,7 @@ package com.hermes.android.audio
 import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.SystemClock
 import java.io.File
 
 /**
@@ -17,6 +18,7 @@ class VoiceRecorder(private val context: Context) {
 
     private var recorder: MediaRecorder? = null
     private var outputFile: File? = null
+    private var startedAtMs: Long = 0L
 
     /** True while a recording is in progress. */
     val isRecording: Boolean get() = recorder != null
@@ -43,11 +45,14 @@ class VoiceRecorder(private val context: Context) {
         }
         recorder = rec
         outputFile = file
+        startedAtMs = SystemClock.elapsedRealtime()
     }
 
     /**
-     * Stops recording and returns the captured bytes, or null if the clip was too
-     * short to produce valid audio (MediaRecorder.stop() throws in that case).
+     * Stops recording and returns the captured bytes, or null when the clip carries
+     * no speech to send on — too short to be a deliberate press, or silent. Cloud
+     * STT (Whisper) hallucinates filler like "you"/"thank you" on near-silence, so
+     * we drop those here rather than transcribe and bother Hermes with them.
      */
     fun stop(): ByteArray? {
         val rec = recorder ?: return null
@@ -55,8 +60,20 @@ class VoiceRecorder(private val context: Context) {
         recorder = null
         outputFile = null
         return try {
+            // getMaxAmplitude() must be read while still recording; the first call
+            // returns the peak since recording started, so one read covers the clip.
+            val peak = try { rec.getMaxAmplitude() } catch (_: Exception) { 0 }
             rec.stop()
-            file?.readBytes()
+            val durationMs = SystemClock.elapsedRealtime() - startedAtMs
+            val bytes = file?.readBytes()
+            when {
+                bytes == null || bytes.isEmpty() -> null
+                durationMs < MIN_DURATION_MS -> null
+                // peak == 0 means amplitude is unreported on this device — keep the
+                // clip and lean on the duration gate (and the transcript backstop).
+                peak in 1 until SILENCE_PEAK -> null
+                else -> bytes
+            }
         } catch (_: RuntimeException) {
             null
         } finally {
@@ -87,4 +104,12 @@ class VoiceRecorder(private val context: Context) {
             @Suppress("DEPRECATION")
             MediaRecorder()
         }
+
+    private companion object {
+        /** Presses shorter than this are accidental taps, not deliberate speech. */
+        const val MIN_DURATION_MS = 400L
+
+        /** Peak amplitude (0..32767) below which a clip is treated as silence. */
+        const val SILENCE_PEAK = 1200
+    }
 }

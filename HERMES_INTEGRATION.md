@@ -71,8 +71,11 @@ curl http://127.0.0.1:9119/health
 | Stop | `session.interrupt` | `{session_id}` |
 | Approvals / clarify / secret / sudo | `approval.respond` / `clarify.respond` / `secret.respond` / `sudo.respond` | responses to the matching `*.request` events |
 
-Voice mode reuses `prompt.submit` (via `HermesRepository.sendMessageBlocking`, which
-collects the stream to its `message.complete`) rather than a separate REST chat call.
+Voice mode reuses `prompt.submit` (via `HermesRepository.submitPromptStreaming`, the
+same streaming Flow text chat uses) rather than a separate REST chat call. It shows
+the live thinking/tool activity inline and speaks the answer sentence by sentence —
+each fragment is split off by `SentenceChunker`, synthesized via `/api/audio/speak`,
+and played while the next streams in.
 
 > **Why voice does not use the gateway `voice.*` methods.** `voice.record` →
 > `start_continuous()` captures from the **server's** microphone; `voice.tts` →

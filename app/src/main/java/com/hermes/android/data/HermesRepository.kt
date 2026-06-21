@@ -26,6 +26,7 @@ import com.hermes.android.data.model.Sender
 import com.google.gson.GsonBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -342,38 +343,6 @@ class HermesRepository(
     }
 
     /**
-     * Runs one turn over the gateway and returns the final assistant text. Collects
-     * [submitPromptStreaming] to its terminal event, folding deltas into the reply
-     * and preferring the authoritative `message.complete` text when present. Used by
-     * voice mode, which needs the whole reply at once rather than incrementally;
-     * tool/thinking events are ignored.
-     *
-     * An interactive request (clarify/approval/sudo/secret) ends the turn with an
-     * error rather than being ignored: voice mode has no UI to answer one, so the
-     * agent would otherwise block server-side forever (no `message.complete` arrives
-     * and the gateway socket has no call timeout), hanging the voice turn.
-     */
-    suspend fun sendMessageBlocking(storedId: String, text: String): Result<String> = runCatching {
-        val reply = StringBuilder()
-        submitPromptStreaming(storedId, text).collect { event ->
-            when (event) {
-                is ChatEvent.Delta -> reply.append(event.text)
-                is ChatEvent.Complete -> if (event.text.isNotBlank()) {
-                    reply.setLength(0)
-                    reply.append(event.text)
-                }
-                is ChatEvent.Failure -> throw GatewayException(event.message)
-                is ChatEvent.Interactive -> throw GatewayException(
-                    "Hermes needs interactive input, which voice mode can't provide. " +
-                        "Use text chat for this request.",
-                )
-                else -> {}
-            }
-        }
-        reply.toString()
-    }
-
-    /**
      * Submits [text] and streams the assistant turn as [ChatEvent]s. Terminates
      * on `message.complete` (Complete) or `error` (Failure). The collector is
      * registered before `prompt.submit` so no early deltas are lost.
@@ -527,15 +496,29 @@ class HermesRepository(
 
         // Kick off the turn after the collector is active. The yield lets the
         // collector's subscription register first; the server's own latency before
-        // the first delta makes this race practically moot anyway. A busy session
-        // is rejected by the server (error 4009), surfaced via the catch below.
+        // the first delta makes this race practically moot anyway.
+        //
+        // A session still busy with a just-interrupted turn rejects prompt.submit with
+        // error 4009. session.interrupt is asynchronous — the agent may take a beat to
+        // actually stop — so retry briefly on 4009 (a barge-in: Stop/new recording →
+        // immediate resend) before giving up. Other errors fail immediately.
         val submit = launch {
             yield()
-            try {
-                gateway.call("prompt.submit", mapOf("session_id" to liveSid, "text" to text))
-            } catch (e: GatewayException) {
-                trySend(ChatEvent.Failure(e.message ?: "Failed to send"))
-                close()
+            var attempt = 0
+            while (true) {
+                try {
+                    gateway.call("prompt.submit", mapOf("session_id" to liveSid, "text" to text))
+                    break
+                } catch (e: GatewayException) {
+                    if (e.code == 4009 && attempt < BUSY_RETRY_LIMIT) {
+                        attempt++
+                        delay(BUSY_RETRY_DELAY_MS)
+                        continue
+                    }
+                    trySend(ChatEvent.Failure(e.message ?: "Failed to send"))
+                    close()
+                    break
+                }
             }
         }
 
@@ -612,6 +595,12 @@ class HermesRepository(
         val bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
         DecodedAudio(bytes = bytes, mime = mime)
     }.recoverCatching { throw VoiceServiceException(VoiceService.TEXT_TO_SPEECH, it) }
+
+    private companion object {
+        /** Retries prompt.submit while a just-interrupted session is still busy (4009). */
+        const val BUSY_RETRY_LIMIT = 8
+        const val BUSY_RETRY_DELAY_MS = 150L
+    }
 }
 
 /** Which voice service a [VoiceServiceException] refers to. */

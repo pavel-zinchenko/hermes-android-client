@@ -21,7 +21,11 @@ class ThinkingSoundPlayer(private val context: Context) {
             val mp = MediaPlayer()
             mp.isLooping = true
             mp.setDataSource(context, Uri.parse(uri))
-            mp.setOnPreparedListener { it.start() }
+            // The filler is started then stopped on nearly every sentence gap, so a
+            // stop()/release() routinely lands while prepareAsync is still in flight.
+            // Only start if this player is still current, or a late onPrepared would
+            // call start() on a released player and crash.
+            mp.setOnPreparedListener { if (player === it) it.start() }
             mp.setOnErrorListener { _, _, _ ->
                 stop()
                 true
