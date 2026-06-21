@@ -192,8 +192,13 @@ class HermesRepository(
 
     suspend fun updateThinkingSound(uri: String) = settingsStore.updateThinkingSound(uri)
 
+    suspend fun updateVoiceEngine(engine: VoiceEngine) = settingsStore.updateVoiceEngine(engine)
+
     /** Content URI of the looped "thinking" sound, or empty if none is set. */
     suspend fun thinkingSoundUri(): String = settingsStore.settings.first().thinkingSoundUri
+
+    /** The engine that should speak replies in voice mode (server vs on-device). */
+    suspend fun voiceEngine(): VoiceEngine = settingsStore.settings.first().voiceEngine
 
     /** Lightweight reachability probe; true iff /health responds with status ok. */
     suspend fun checkHealth(): Result<Boolean> = runCatching {

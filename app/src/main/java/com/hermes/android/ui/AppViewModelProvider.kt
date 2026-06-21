@@ -6,6 +6,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.hermes.android.HermesApp
 import com.hermes.android.audio.AudioPlayer
+import com.hermes.android.audio.OnDeviceTts
 import com.hermes.android.audio.ThinkingSoundPlayer
 import com.hermes.android.audio.VoiceRecorder
 import com.hermes.android.ui.chat.ChatSessionViewModel
@@ -30,6 +31,7 @@ object AppViewModelProvider {
                 recorder = VoiceRecorder(app),
                 player = AudioPlayer(app),
                 thinkingSound = ThinkingSoundPlayer(app),
+                onDeviceTts = OnDeviceTts(app),
                 savedStateHandle = createSavedStateHandle(),
             )
         }

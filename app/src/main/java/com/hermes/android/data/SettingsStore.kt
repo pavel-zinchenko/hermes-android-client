@@ -11,6 +11,15 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "hermes_settings")
 
+/** Which engine synthesizes spoken replies in voice mode. */
+enum class VoiceEngine {
+    /** Hermes server TTS over `/api/audio/speak` (neural voices; needs the server). */
+    SERVER,
+
+    /** Android's built-in [android.speech.tts.TextToSpeech] (offline, free). */
+    ON_DEVICE,
+}
+
 data class HermesSettings(
     /**
      * Base URL of the single Hermes backend — the dashboard (`hermes dashboard`,
@@ -26,6 +35,11 @@ data class HermesSettings(
      * Empty = no thinking sound.
      */
     val thinkingSoundUri: String = "",
+    /**
+     * Which engine speaks replies in voice mode. Defaults to [VoiceEngine.SERVER]
+     * (higher-quality neural voices); [VoiceEngine.ON_DEVICE] runs offline.
+     */
+    val voiceEngine: VoiceEngine = VoiceEngine.SERVER,
 ) {
     /** Normalized server URL guaranteed to end with a single trailing slash. */
     val normalizedServerUrl: String
@@ -67,6 +81,7 @@ class SettingsStore(private val context: Context) {
         val SERVER_URL = stringPreferencesKey("voice_server_url")
         val API_KEY = stringPreferencesKey("voice_api_key")
         val THINKING_SOUND_URI = stringPreferencesKey("thinking_sound_uri")
+        val VOICE_ENGINE = stringPreferencesKey("voice_engine")
     }
 
     val settings: Flow<HermesSettings> = context.dataStore.data.map { prefs ->
@@ -75,6 +90,10 @@ class SettingsStore(private val context: Context) {
                 ?: HermesSettings.DEFAULT_SERVER_URL,
             apiKey = prefs[Keys.API_KEY].orEmpty(),
             thinkingSoundUri = prefs[Keys.THINKING_SOUND_URI].orEmpty(),
+            // Unknown/legacy values fall back to the server default.
+            voiceEngine = prefs[Keys.VOICE_ENGINE]
+                ?.let { name -> runCatching { VoiceEngine.valueOf(name) }.getOrNull() }
+                ?: VoiceEngine.SERVER,
         )
     }
 
@@ -87,5 +106,9 @@ class SettingsStore(private val context: Context) {
 
     suspend fun updateThinkingSound(uri: String) {
         context.dataStore.edit { prefs -> prefs[Keys.THINKING_SOUND_URI] = uri.trim() }
+    }
+
+    suspend fun updateVoiceEngine(engine: VoiceEngine) {
+        context.dataStore.edit { prefs -> prefs[Keys.VOICE_ENGINE] = engine.name }
     }
 }

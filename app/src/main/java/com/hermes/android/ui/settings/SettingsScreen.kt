@@ -20,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -29,6 +28,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -46,6 +48,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hermes.android.data.VoiceEngine
 import com.hermes.android.ui.AppViewModelProvider
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -142,6 +145,33 @@ fun SettingsScreen(
             )
 
             Text(
+                text = "Voice output",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "Which engine speaks replies in voice mode. On-device works " +
+                    "offline and adds no latency; the server offers higher-quality voices.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val engineOptions = listOf(
+                VoiceEngine.SERVER to "Hermes server",
+                VoiceEngine.ON_DEVICE to "On-device",
+            )
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                engineOptions.forEachIndexed { index, (engine, label) ->
+                    SegmentedButton(
+                        selected = state.voiceEngine == engine,
+                        onClick = { viewModel.setVoiceEngine(engine) },
+                        shape = SegmentedButtonDefaults.itemShape(index, engineOptions.size),
+                    ) {
+                        Text(label)
+                    }
+                }
+            }
+
+            Text(
                 text = "Thinking sound",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -175,30 +205,14 @@ fun SettingsScreen(
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(
-                    onClick = viewModel::save,
-                    enabled = state.testResult != TestResult.Testing,
-                ) {
-                    Text("Save")
-                }
-                OutlinedButton(
-                    onClick = viewModel::testConnection,
-                    enabled = state.testResult != TestResult.Testing,
-                ) {
-                    Text("Test connection")
-                }
+            OutlinedButton(
+                onClick = viewModel::testConnection,
+                enabled = state.testResult != TestResult.Testing,
+            ) {
+                Text("Test connection")
             }
 
             TestResultRow(state)
-
-            if (state.saved && state.testResult is TestResult.Idle) {
-                Text(
-                    text = "Saved.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
         }
     }
 }

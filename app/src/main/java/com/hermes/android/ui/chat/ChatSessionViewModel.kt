@@ -5,12 +5,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermes.android.audio.AudioDecoder
 import com.hermes.android.audio.AudioPlayer
+import com.hermes.android.audio.OnDeviceTts
 import com.hermes.android.audio.SentenceChunker
 import com.hermes.android.audio.SpeechSanitizer
 import com.hermes.android.audio.ThinkingSoundPlayer
 import com.hermes.android.audio.VoiceRecorder
 import com.hermes.android.data.DecodedAudio
 import com.hermes.android.data.HermesRepository
+import com.hermes.android.data.VoiceEngine
 import com.hermes.android.data.gateway.ChatEvent
 import com.hermes.android.data.gateway.InteractiveRequest
 import com.hermes.android.data.model.ChatMessage
@@ -95,6 +97,7 @@ class ChatSessionViewModel(
     private val recorder: VoiceRecorder,
     private val player: AudioPlayer,
     private val thinkingSound: ThinkingSoundPlayer,
+    private val onDeviceTts: OnDeviceTts,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -334,6 +337,9 @@ class ChatSessionViewModel(
         append(Sender.USER, transcript)
 
         _state.update { it.copy(phase = VoicePhase.RESPONDING) }
+        // Pick the synthesizer once for the whole turn so a mid-turn settings change
+        // can't split one reply across two engines.
+        val engine = repository.voiceEngine()
         // The filler sound covers every gap where nothing is playing but the turn is
         // still going. Prepare it once for the whole turn so it resumes instantly on
         // each gap; start it now to cover the wait for the first sentence.
@@ -363,7 +369,7 @@ class ChatSessionViewModel(
                         // aloud. A fragment that is pure decoration cleans to blank — skip it.
                         val speakable = SpeechSanitizer.clean(fragment)
                         if (speakable.isBlank()) continue
-                        repository.speak(speakable)
+                        synthesize(engine, speakable)
                             .onSuccess { clip ->
                                 synthesizedAny = true
                                 audios.send(tightened(clip))
@@ -479,6 +485,15 @@ class ChatSessionViewModel(
     }
 
     /**
+     * Synthesizes [text] with the [engine] chosen for this turn: the on-device
+     * [TextToSpeech][OnDeviceTts] (offline) or Hermes server TTS. Both return the same
+     * [DecodedAudio], so the surrounding pipeline (trim → play) is identical.
+     */
+    private suspend fun synthesize(engine: VoiceEngine, text: String): Result<DecodedAudio> =
+        if (engine == VoiceEngine.ON_DEVICE) onDeviceTts.synthesize(text)
+        else repository.speak(text)
+
+    /**
      * Trims the leading/trailing silence off a synthesized [clip] so sentences play
      * back-to-back instead of padded with dead air. Decoding is CPU work, so it runs
      * off the main thread; on any failure the original clip plays untrimmed.
@@ -591,5 +606,6 @@ class ChatSessionViewModel(
         recorder.cancel()
         player.stop()
         thinkingSound.release()
+        onDeviceTts.shutdown()
     }
 }

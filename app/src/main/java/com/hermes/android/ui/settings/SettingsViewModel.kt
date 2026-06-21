@@ -3,6 +3,7 @@ package com.hermes.android.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermes.android.data.HermesRepository
+import com.hermes.android.data.VoiceEngine
 import com.hermes.android.ui.toUserMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,8 +22,8 @@ data class SettingsUiState(
     val serverUrl: String = "",
     val apiKey: String = "",
     val thinkingSoundUri: String = "",
+    val voiceEngine: VoiceEngine = VoiceEngine.SERVER,
     val loaded: Boolean = false,
-    val saved: Boolean = false,
     val testResult: TestResult = TestResult.Idle,
 )
 
@@ -42,17 +43,32 @@ class SettingsViewModel(
                     serverUrl = current.serverUrl,
                     apiKey = current.apiKey,
                     thinkingSoundUri = current.thinkingSoundUri,
+                    voiceEngine = current.voiceEngine,
                     loaded = true,
                 )
             }
         }
     }
 
-    fun onServerUrlChange(value: String) =
-        _state.update { it.copy(serverUrl = value, saved = false, testResult = TestResult.Idle) }
+    fun onServerUrlChange(value: String) {
+        _state.update { it.copy(serverUrl = value, testResult = TestResult.Idle) }
+        persistServer()
+    }
 
-    fun onApiKeyChange(value: String) =
-        _state.update { it.copy(apiKey = value, saved = false, testResult = TestResult.Idle) }
+    fun onApiKeyChange(value: String) {
+        _state.update { it.copy(apiKey = value, testResult = TestResult.Idle) }
+        persistServer()
+    }
+
+    /**
+     * Writes the current URL + token straight to settings. Called on every edit so the
+     * server config saves automatically (no Save button). DataStore serializes writes,
+     * so overlapping keystroke saves can't corrupt each other — the last value wins.
+     */
+    private fun persistServer() {
+        val s = _state.value
+        viewModelScope.launch { repository.updateSettings(s.serverUrl, s.apiKey) }
+    }
 
     /** Persists the picked thinking-sound URI immediately (it carries a permission). */
     fun setThinkingSound(uri: String) {
@@ -62,12 +78,10 @@ class SettingsViewModel(
 
     fun clearThinkingSound() = setThinkingSound("")
 
-    fun save() {
-        viewModelScope.launch {
-            val s = _state.value
-            repository.updateSettings(s.serverUrl, s.apiKey)
-            _state.update { it.copy(saved = true) }
-        }
+    /** Persists the chosen voice engine immediately (a simple toggle, no Save needed). */
+    fun setVoiceEngine(engine: VoiceEngine) {
+        _state.update { it.copy(voiceEngine = engine) }
+        viewModelScope.launch { repository.updateVoiceEngine(engine) }
     }
 
     /**
@@ -81,7 +95,6 @@ class SettingsViewModel(
         viewModelScope.launch {
             val s = _state.value
             repository.updateSettings(s.serverUrl, s.apiKey)
-            _state.update { it.copy(saved = true) }
             repository.checkHealthViaGateway()
                 .onSuccess { ok ->
                     _state.update {
