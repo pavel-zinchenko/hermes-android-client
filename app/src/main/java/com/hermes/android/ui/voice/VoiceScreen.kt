@@ -59,13 +59,17 @@ import com.hermes.android.data.model.Sender
 import com.hermes.android.data.model.TurnPart
 import com.hermes.android.ui.AppViewModelProvider
 import com.hermes.android.ui.chat.AssistantPartsMessage
+import com.hermes.android.ui.chat.ChatSessionViewModel
+import com.hermes.android.ui.chat.InitialScrollToBottomEffect
+import com.hermes.android.ui.chat.MarkdownText
+import com.hermes.android.ui.chat.VoicePhase
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VoiceScreen(
     onBack: () -> Unit,
-    viewModel: VoiceViewModel = viewModel(factory = AppViewModelProvider.Factory),
+    viewModel: ChatSessionViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -112,6 +116,7 @@ fun VoiceScreen(
         }
     } ?: 0
 
+    InitialScrollToBottomEffect(listState, state.loadingHistory, state.messages.size)
     LaunchedEffect(state.messages.size, streamSignal) {
         if (!atBottom || state.messages.isEmpty()) return@LaunchedEffect
         // Large offset clamps to content end, so the newest line of a tall, still
@@ -272,11 +277,19 @@ private fun VoiceBubble(message: ChatMessage) {
                 color = (if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
                     .copy(alpha = 0.7f),
             )
-            Text(
-                text = message.text,
-                style = MaterialTheme.typography.bodyLarge,
-                color = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // Hermes answers in Markdown; render it formatted. User turns are plain text.
+            if (isUser) {
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+            } else {
+                MarkdownText(
+                    text = message.text,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

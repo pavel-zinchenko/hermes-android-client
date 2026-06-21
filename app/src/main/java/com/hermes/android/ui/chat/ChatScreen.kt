@@ -59,7 +59,7 @@ import com.hermes.android.ui.AppViewModelProvider
 fun ChatScreen(
     onBack: () -> Unit,
     onOpenVoice: () -> Unit,
-    viewModel: ChatViewModel = viewModel(factory = AppViewModelProvider.Factory),
+    viewModel: ChatSessionViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -90,6 +90,8 @@ fun ChatScreen(
             }
         }
     } ?: 0
+
+    InitialScrollToBottomEffect(listState, state.loadingHistory, state.messages.size)
 
     // Keep the bottom of the newest content in view as the conversation grows.
     LaunchedEffect(state.messages.size, state.sending, streamSignal) {
@@ -218,12 +220,21 @@ private fun MessageBubble(message: ChatMessage) {
             ),
             modifier = Modifier.widthIn(max = 320.dp),
         ) {
-            Text(
-                text = message.text,
-                style = MaterialTheme.typography.bodyLarge,
-                color = textColor,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            )
+            // Hermes answers in Markdown; render it formatted. User messages are plain.
+            if (isUser) {
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = textColor,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            } else {
+                MarkdownText(
+                    text = message.text,
+                    color = textColor,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            }
         }
     }
 }

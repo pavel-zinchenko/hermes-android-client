@@ -67,9 +67,9 @@ internal fun AssistantTextBubble(text: String) {
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp),
             modifier = Modifier.widthIn(max = 320.dp),
         ) {
-            Text(
+            // Assistant answers arrive as Markdown; render it formatted.
+            MarkdownText(
                 text = text,
-                style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             )

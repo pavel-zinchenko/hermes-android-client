@@ -1,5 +1,6 @@
 package com.hermes.android.ui.voice
 
+import com.hermes.android.ui.chat.isLikelyNoise
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test

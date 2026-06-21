@@ -56,14 +56,26 @@ class SessionsViewModel(
     }
 
     fun deleteSession(id: String) {
-        // Optimistic removal; refresh reconciles with the server.
+        // Optimistic removal; refresh reconciles with the server on success.
+        val removed = _state.value.sessions.firstOrNull { it.id == id }
         _state.update { it.copy(sessions = it.sessions.filterNot { s -> s.id == id }) }
         viewModelScope.launch {
             repository.deleteSession(id)
                 .onSuccess { refresh() }
                 .onFailure { err ->
-                    _state.update { it.copy(error = err.toUserMessage()) }
-                    refresh()
+                    // Re-add just the deleted row and keep the error visible. (refresh()
+                    // would clear the error and re-add the still-present row with no
+                    // explanation — the "it reappears silently" bug.) Restoring only this
+                    // row, rather than a stale whole-list snapshot, preserves any rows
+                    // added/removed concurrently while the delete was in flight.
+                    _state.update { st ->
+                        val sessions = if (removed != null && st.sessions.none { it.id == id }) {
+                            st.sessions + removed
+                        } else {
+                            st.sessions
+                        }
+                        st.copy(sessions = sessions, error = err.toUserMessage())
+                    }
                 }
         }
     }

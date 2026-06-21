@@ -264,13 +264,21 @@ class HermesRepository(
 
     /**
      * Deletes a stored session over the gateway (`session.delete`). The gateway
-     * refuses to delete a session currently live in its process (RPC 4023); that
-     * surfaces as a [GatewayException] the caller can report.
+     * refuses to delete a session that is still live in its process (RPC 4023).
+     * Because this app holds one long-lived gateway socket, any session we've opened
+     * stays live (resumed) for the whole run — so we first `session.close` the live
+     * sid (best-effort) to evict it from the gateway, then delete. A genuine failure
+     * still surfaces as a [GatewayException] the caller can report.
      */
     suspend fun deleteSession(storedId: String): Result<Unit> = runCatching {
         val settings = settingsStore.settings.first()
         _settings.value = settings
         gateway.connect(settings.gatewayWsUrl)
+        // Release any live session bound in the gateway so delete isn't refused (4023).
+        // session.close pops it synchronously, so by the time delete runs it's gone.
+        liveSessionIds.remove(storedId)?.let { live ->
+            runCatching { gateway.call("session.close", mapOf("session_id" to live.sid)) }
+        }
         gateway.call("session.delete", mapOf("session_id" to storedId))
         Unit
     }

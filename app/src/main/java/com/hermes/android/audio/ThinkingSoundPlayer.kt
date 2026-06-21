@@ -5,40 +5,81 @@ import android.media.MediaPlayer
 import android.net.Uri
 
 /**
- * Loops an optional user-chosen audio file (a SAF content URI) while Hermes is
- * thinking. A blank URI or any playback error is a silent no-op so it never
- * interferes with the actual chat/voice flow.
+ * Loops an optional user-chosen audio file (a SAF content URI) to fill the gaps
+ * between spoken sentences while Hermes is thinking. A blank URI or any playback
+ * error is a silent no-op so it never interferes with the actual chat/voice flow.
+ *
+ * The filler is toggled on and off on *every* sentence gap, so it is [prepare]d
+ * once per turn and then driven with cheap [resume]/[pause] calls. Re-preparing a
+ * fresh [MediaPlayer] on each gap (the old model) meant `prepareAsync` was still in
+ * flight when a short gap ended, so brief gaps fell silent; a prepared player
+ * resumes instantly and actually covers them.
  */
 class ThinkingSoundPlayer(private val context: Context) {
 
     private var player: MediaPlayer? = null
+    // Set once the async prepare completes, so resume/pause know it's safe to drive.
+    private var prepared = false
+    // Whether the filler should be sounding right now. A resume()/pause() before
+    // prepare completes records intent here; onPrepared applies it.
+    private var wantPlaying = false
 
-    /** Starts looping [uri]. No-op if [uri] is blank or can't be played. */
-    fun start(uri: String?) {
-        stop()
+    /**
+     * Prepares [uri] as a looping filler, ready for instant [resume]/[pause]. Tears
+     * down any previous player first. No-op if [uri] is blank or can't be played.
+     */
+    fun prepare(uri: String?) {
+        release()
         if (uri.isNullOrBlank()) return
         try {
             val mp = MediaPlayer()
             mp.isLooping = true
             mp.setDataSource(context, Uri.parse(uri))
-            // The filler is started then stopped on nearly every sentence gap, so a
-            // stop()/release() routinely lands while prepareAsync is still in flight.
-            // Only start if this player is still current, or a late onPrepared would
-            // call start() on a released player and crash.
-            mp.setOnPreparedListener { if (player === it) it.start() }
+            mp.setOnPreparedListener {
+                // The player may have been released while preparing; only touch it if
+                // it's still current, or a late callback would start a released player.
+                if (player === it) {
+                    prepared = true
+                    if (wantPlaying) it.start()
+                }
+            }
             mp.setOnErrorListener { _, _, _ ->
-                stop()
+                release()
                 true
             }
             mp.prepareAsync()
             player = mp
         } catch (_: Exception) {
             // Missing file / revoked permission / unsupported codec — stay silent.
-            stop()
+            release()
         }
     }
 
-    fun stop() {
+    /** Starts or resumes the filler. Cheap once [prepare]d; safe to call repeatedly. */
+    fun resume() {
+        wantPlaying = true
+        val mp = player ?: return
+        if (!prepared) return // onPrepared will start it once ready
+        try {
+            if (!mp.isPlaying) mp.start()
+        } catch (_: IllegalStateException) {
+            // Player moved to an invalid state (e.g. error) — leave it alone.
+        }
+    }
+
+    /** Pauses the filler without tearing it down, so the next [resume] is instant. */
+    fun pause() {
+        wantPlaying = false
+        val mp = player ?: return
+        if (!prepared) return
+        try {
+            if (mp.isPlaying) mp.pause()
+        } catch (_: IllegalStateException) {
+        }
+    }
+
+    /** Fully stops the filler and releases its resources. */
+    fun release() {
         player?.let { mp ->
             try {
                 mp.stop()
@@ -48,5 +89,7 @@ class ThinkingSoundPlayer(private val context: Context) {
             mp.release()
         }
         player = null
+        prepared = false
+        wantPlaying = false
     }
 }
