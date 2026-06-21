@@ -57,6 +57,8 @@ import com.hermes.android.ui.AppViewModelProvider
 fun SettingsScreen(
     onBack: () -> Unit,
     onOpenModels: () -> Unit,
+    onOpenTts: () -> Unit,
+    onOpenStt: () -> Unit,
     viewModel: SettingsViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -161,6 +163,37 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Hermes Models", modifier = Modifier.weight(1f))
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                )
+            }
+
+            Text(
+                text = "Voice providers",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "Choose which speech engines Hermes uses and manage their API keys.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = onOpenTts,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Speech (TTS)", modifier = Modifier.weight(1f))
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                )
+            }
+            OutlinedButton(
+                onClick = onOpenStt,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Speech recognition", modifier = Modifier.weight(1f))
                 Icon(
                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = null,

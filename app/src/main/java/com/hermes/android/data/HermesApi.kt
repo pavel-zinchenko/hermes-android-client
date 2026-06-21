@@ -1,13 +1,22 @@
 package com.hermes.android.data
 
+import com.google.gson.JsonObject
+import com.hermes.android.data.dto.ConfigUpdateRequest
 import com.hermes.android.data.dto.CronJobDto
+import com.hermes.android.data.dto.EnvVarStatusDto
+import com.hermes.android.data.dto.EnvVarUpdateRequest
 import com.hermes.android.data.dto.HealthDto
 import com.hermes.android.data.dto.ModelSetRequest
 import com.hermes.android.data.dto.ModelSetResponse
+import com.hermes.android.data.dto.OkResponse
+import com.hermes.android.data.dto.ToolsetConfigResponse
+import com.hermes.android.data.dto.ToolsetEnvUpdateRequest
+import com.hermes.android.data.dto.ToolsetProviderSelectRequest
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -34,4 +43,44 @@ interface HermesApi {
     /** Selects the active main model (POST /api/model/set). */
     @POST("api/model/set")
     suspend fun setModel(@Body body: ModelSetRequest): ModelSetResponse
+
+    // --- Voice providers -----------------------------------------------------
+
+    /** Lists a toolset's providers + key status (GET /api/tools/toolsets/{name}/config). */
+    @GET("api/tools/toolsets/{name}/config")
+    suspend fun getToolsetConfig(@Path("name") name: String): ToolsetConfigResponse
+
+    /** Selects a toolset's active provider (PUT /api/tools/toolsets/{name}/provider). */
+    @PUT("api/tools/toolsets/{name}/provider")
+    suspend fun setToolsetProvider(
+        @Path("name") name: String,
+        @Body body: ToolsetProviderSelectRequest,
+    ): OkResponse
+
+    /** Saves API keys for a toolset's providers (PUT /api/tools/toolsets/{name}/env). */
+    @PUT("api/tools/toolsets/{name}/env")
+    suspend fun saveToolsetEnv(
+        @Path("name") name: String,
+        @Body body: ToolsetEnvUpdateRequest,
+    ): OkResponse
+
+    /** Reads the full config tree (GET /api/config); kept intact for round-tripping. */
+    @GET("api/config")
+    suspend fun getConfig(): JsonObject
+
+    /** Overwrites the full config (PUT /api/config). */
+    @PUT("api/config")
+    suspend fun updateConfig(@Body body: ConfigUpdateRequest): OkResponse
+
+    /** Config field schema incl. select options (GET /api/config/schema). */
+    @GET("api/config/schema")
+    suspend fun getConfigSchema(): JsonObject
+
+    /** Provider API-key env vars with their set-state (GET /api/env). */
+    @GET("api/env")
+    suspend fun getEnvVars(): Map<String, EnvVarStatusDto>
+
+    /** Saves a single provider API key by env-var name (PUT /api/env). */
+    @PUT("api/env")
+    suspend fun setEnvVar(@Body body: EnvVarUpdateRequest): OkResponse
 }

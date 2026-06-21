@@ -14,6 +14,8 @@ import com.hermes.android.ui.schedule.ScheduleScreen
 import com.hermes.android.ui.sessions.SessionsScreen
 import com.hermes.android.ui.settings.SettingsScreen
 import com.hermes.android.ui.startup.ConnectionGate
+import com.hermes.android.ui.voice.SttScreen
+import com.hermes.android.ui.voice.TtsScreen
 import com.hermes.android.ui.voice.VoiceScreen
 
 object Routes {
@@ -21,6 +23,8 @@ object Routes {
     const val SESSIONS = "sessions"
     const val SETTINGS = "settings"
     const val MODELS = "models"
+    const val TTS = "tts"
+    const val STT = "stt"
     const val SCHEDULE = "schedule"
     // Chat + voice live in one nested graph keyed by sessionId so they can share a
     // single ViewModel (scoped to this graph's back stack entry).
@@ -85,11 +89,21 @@ fun HermesNavHost() {
             SettingsScreen(
                 onBack = { navController.popBackStack() },
                 onOpenModels = { navController.navigate(Routes.MODELS) },
+                onOpenTts = { navController.navigate(Routes.TTS) },
+                onOpenStt = { navController.navigate(Routes.STT) },
             )
         }
 
         composable(Routes.MODELS) {
             ModelsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.TTS) {
+            TtsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.STT) {
+            SttScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.SCHEDULE) {

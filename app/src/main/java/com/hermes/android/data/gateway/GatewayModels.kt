@@ -194,6 +194,29 @@ data class ModelPrice(
     val free: Boolean = false,
 )
 
+// --- Speech-to-text configuration --------------------------------------------
+// STT isn't a Hermes "toolset", so there's no provider matrix endpoint. The
+// repository assembles this from GET /api/config/schema (provider options),
+// GET /api/config (current stt.provider) and GET /api/env (key set-state).
+
+/** The STT provider choices plus which one is active. */
+data class SttConfig(
+    val currentProvider: String? = null,
+    val providers: List<SttProviderRow> = emptyList(),
+)
+
+/**
+ * One STT provider choice. [slug] is the config value (e.g. "groq"); [keyEnv] is
+ * the API-key env var it needs (null for local), and [keySet] whether that key is
+ * already stored.
+ */
+data class SttProviderRow(
+    val slug: String,
+    val label: String,
+    val keyEnv: String?,
+    val keySet: Boolean,
+)
+
 // --- Repository → ViewModel contract -----------------------------------------
 
 /**

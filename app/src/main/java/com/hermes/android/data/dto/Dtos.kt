@@ -75,6 +75,61 @@ data class ModelSetResponse(
     @SerializedName("confirm_message") val confirmMessage: String? = null,
 )
 
+// --- Voice providers (TTS toolset + STT config) ------------------------------
+// TTS is a first-class "toolset" on the dashboard (GET/PUT
+// /api/tools/toolsets/tts/...), so it has a rich provider matrix. STT is plain
+// config (stt.provider in config.yaml) plus generic /api/env key storage, so it
+// reuses the bare config/env DTOs below. See HERMES_INTEGRATION.md / the plan.
+
+/** Response for GET /api/tools/toolsets/{name}/config (we use it for `tts`). */
+data class ToolsetConfigResponse(
+    val name: String = "",
+    @SerializedName("has_category") val hasCategory: Boolean = false,
+    @SerializedName("active_provider") val activeProvider: String? = null,
+    val providers: List<ToolsetProviderDto> = emptyList(),
+)
+
+/** One provider row in a toolset config. Providers are keyed by display [name]. */
+data class ToolsetProviderDto(
+    val name: String = "",
+    val badge: String? = null,
+    val tag: String? = null,
+    @SerializedName("env_vars") val envVars: List<ToolsetEnvVarDto> = emptyList(),
+    @SerializedName("requires_nous_auth") val requiresNousAuth: Boolean = false,
+    @SerializedName("is_active") val isActive: Boolean = false,
+)
+
+/** A single API-key env var a toolset provider needs, with its set-state. */
+data class ToolsetEnvVarDto(
+    val key: String = "",
+    val prompt: String? = null,
+    val url: String? = null,
+    @SerializedName("is_set") val isSet: Boolean = false,
+)
+
+/** Request for PUT /api/tools/toolsets/{name}/provider — select by display name. */
+data class ToolsetProviderSelectRequest(val provider: String)
+
+/** Request for PUT /api/tools/toolsets/{name}/env — save one or more keys. */
+data class ToolsetEnvUpdateRequest(val env: Map<String, String>)
+
+/** Request for PUT /api/env — save a single provider API key by env-var name. */
+data class EnvVarUpdateRequest(val key: String, val value: String)
+
+/**
+ * Request for PUT /api/config. The server overwrites the whole config with
+ * [config], so callers GET the full tree, mutate one key, and send it all back.
+ */
+data class ConfigUpdateRequest(val config: com.google.gson.JsonObject)
+
+/** One entry of GET /api/env (`{ ENV_VAR: { is_set, ... } }`); only is_set is used. */
+data class EnvVarStatusDto(
+    @SerializedName("is_set") val isSet: Boolean = false,
+)
+
+/** Generic `{ "ok": true }` ack for PUTs whose body we otherwise ignore. */
+data class OkResponse(val ok: Boolean = false)
+
 // --- Cron / scheduled tasks --------------------------------------------------
 // Mirror the cron job shape returned by GET /api/cron/jobs (web_server.py,
 // backed by cron/jobs.py). Only the fields the app needs to mirror a job into a

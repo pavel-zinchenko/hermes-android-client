@@ -15,6 +15,8 @@ import com.hermes.android.ui.schedule.ScheduleViewModel
 import com.hermes.android.ui.sessions.SessionsViewModel
 import com.hermes.android.ui.settings.SettingsViewModel
 import com.hermes.android.ui.startup.ConnectionViewModel
+import com.hermes.android.ui.voice.SttViewModel
+import com.hermes.android.ui.voice.TtsViewModel
 
 private fun extrasApp(
     extras: androidx.lifecycle.viewmodel.CreationExtras,
@@ -27,6 +29,8 @@ object AppViewModelProvider {
         initializer { SessionsViewModel(extrasApp(this).repository) }
         initializer { SettingsViewModel(extrasApp(this).repository) }
         initializer { ModelsViewModel(extrasApp(this).repository) }
+        initializer { TtsViewModel(extrasApp(this).repository) }
+        initializer { SttViewModel(extrasApp(this).repository) }
         initializer {
             val app = extrasApp(this)
             ScheduleViewModel(app.repository, app.reminderScheduler)

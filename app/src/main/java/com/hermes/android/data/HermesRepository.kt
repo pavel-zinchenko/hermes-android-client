@@ -1,9 +1,16 @@
 package com.hermes.android.data
 
 import android.util.Base64
+import com.hermes.android.data.dto.ConfigUpdateRequest
+import com.hermes.android.data.dto.EnvVarUpdateRequest
 import com.hermes.android.data.dto.ModelSetRequest
 import com.hermes.android.data.dto.SpeakRequest
+import com.hermes.android.data.dto.ToolsetConfigResponse
+import com.hermes.android.data.dto.ToolsetEnvUpdateRequest
+import com.hermes.android.data.dto.ToolsetProviderSelectRequest
 import com.hermes.android.data.dto.TranscribeRequest
+import com.hermes.android.data.gateway.SttConfig
+import com.hermes.android.data.gateway.SttProviderRow
 import com.hermes.android.data.gateway.ApprovalRequestPayload
 import com.hermes.android.data.gateway.ChatEvent
 import com.hermes.android.data.gateway.ClarifyRequestPayload
@@ -280,6 +287,87 @@ class HermesRepository(
                 confirmExpensive = confirmExpensive,
             )
         )
+    }
+
+    // --- Voice providers (server-side TTS / STT) --------------------------
+    // These configure which engine *Hermes* uses, not the app's on-device vs.
+    // server VoiceEngine toggle. TTS is a dashboard "toolset" with a provider
+    // matrix; STT is plain config (stt.provider) + generic /api/env keys.
+
+    /** Lists the TTS providers and their key status (GET .../toolsets/tts/config). */
+    suspend fun listTtsConfig(): Result<ToolsetConfigResponse> = runCatching {
+        api().getToolsetConfig("tts")
+    }
+
+    /** Selects the active TTS provider by display name (PUT .../toolsets/tts/provider). */
+    suspend fun setTtsProvider(name: String): Result<Unit> = runCatching {
+        api().setToolsetProvider("tts", ToolsetProviderSelectRequest(name))
+        Unit
+    }
+
+    /** Saves one or more TTS provider API keys (PUT .../toolsets/tts/env). */
+    suspend fun saveTtsKeys(env: Map<String, String>): Result<Unit> = runCatching {
+        api().saveToolsetEnv("tts", ToolsetEnvUpdateRequest(env))
+        Unit
+    }
+
+    /**
+     * Assembles the STT picker: provider options from the config schema (falling
+     * back to [STT_PROVIDER_META]'s order), the active `stt.provider` from config,
+     * and per-provider key set-state from `/api/env`.
+     */
+    suspend fun listSttConfig(): Result<SttConfig> = runCatching {
+        val api = api()
+        val options = runCatching { sttProviderOptions(api.getConfigSchema()) }
+            .getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            ?: STT_PROVIDER_META.keys.toList()
+        val current = runCatching {
+            api.getConfig().getAsJsonObject("stt")?.get("provider")?.asString
+        }.getOrNull()
+        val envStatus = runCatching { api.getEnvVars() }.getOrNull().orEmpty()
+        val rows = options.map { slug ->
+            val (label, keyEnv) = STT_PROVIDER_META[slug] ?: (slug to null)
+            SttProviderRow(
+                slug = slug,
+                label = label,
+                keyEnv = keyEnv,
+                keySet = keyEnv != null && envStatus[keyEnv]?.isSet == true,
+            )
+        }
+        SttConfig(currentProvider = current, providers = rows)
+    }
+
+    /**
+     * Selects the active STT provider. PUT /api/config overwrites the whole config,
+     * so we read it, set only `stt.provider`, and send it all back.
+     */
+    suspend fun setSttProvider(slug: String): Result<Unit> = runCatching {
+        val api = api()
+        val config = api.getConfig()
+        val stt = if (config.has("stt") && config.get("stt").isJsonObject) {
+            config.getAsJsonObject("stt")
+        } else {
+            com.google.gson.JsonObject().also { config.add("stt", it) }
+        }
+        stt.addProperty("provider", slug)
+        api.updateConfig(ConfigUpdateRequest(config))
+        Unit
+    }
+
+    /** Saves an STT provider's API key by env-var name (PUT /api/env). */
+    suspend fun saveSttKey(envVar: String, value: String): Result<Unit> = runCatching {
+        api().setEnvVar(EnvVarUpdateRequest(envVar, value))
+        Unit
+    }
+
+    /** Reads `fields["stt.provider"].options` from the config schema response. */
+    private fun sttProviderOptions(schema: com.google.gson.JsonObject): List<String> {
+        val options = schema.getAsJsonObject("fields")
+            ?.getAsJsonObject("stt.provider")
+            ?.getAsJsonArray("options")
+            ?: return emptyList()
+        return options.mapNotNull { it.asString?.takeIf(String::isNotBlank) }
     }
 
     /**
@@ -690,6 +778,23 @@ class HermesRepository(
         /** Retries prompt.submit while a just-interrupted session is still busy (4009). */
         const val BUSY_RETRY_LIMIT = 8
         const val BUSY_RETRY_DELAY_MS = 150L
+
+        /**
+         * STT provider slug → (display label, API-key env var). The dashboard
+         * exposes no per-provider env metadata for STT (it isn't a toolset), so the
+         * mapping lives here. `local` needs no key. Order is the schema fallback.
+         * `mistral` is currently dropped from the server's `stt.provider` options
+         * (mistralai package quarantined) but kept here so its key field appears
+         * the moment the server restores it.
+         */
+        val STT_PROVIDER_META: Map<String, Pair<String, String?>> = linkedMapOf(
+            "local" to ("Local Whisper" to null),
+            "groq" to ("Groq" to "GROQ_API_KEY"),
+            "openai" to ("OpenAI Whisper" to "OPENAI_API_KEY"),
+            "xai" to ("xAI" to "XAI_API_KEY"),
+            "mistral" to ("Mistral Voxtral" to "MISTRAL_API_KEY"),
+            "elevenlabs" to ("ElevenLabs Scribe" to "ELEVENLABS_API_KEY"),
+        )
     }
 }
 
