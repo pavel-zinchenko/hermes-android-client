@@ -37,7 +37,9 @@ import com.hermes.android.data.model.ScheduledTask
 import com.hermes.android.data.model.Sender
 import com.google.gson.GsonBuilder
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -325,24 +327,52 @@ class HermesRepository(
      */
     suspend fun listSttConfig(): Result<SttConfig> = runCatching {
         val api = api()
-        val options = runCatching { sttProviderOptions(api.getConfigSchema()) }
-            .getOrNull()
-            ?.takeIf { it.isNotEmpty() }
-            ?: STT_PROVIDER_META.keys.toList()
-        val current = runCatching {
-            api.getConfig().getAsJsonObject("stt")?.get("provider")?.asString
-        }.getOrNull()
-        val envStatus = runCatching { api.getEnvVars() }.getOrNull().orEmpty()
-        val rows = options.map { slug ->
-            val (label, keyEnv) = STT_PROVIDER_META[slug] ?: (slug to null)
-            SttProviderRow(
-                slug = slug,
-                label = label,
-                keyEnv = keyEnv,
-                keySet = keyEnv != null && envStatus[keyEnv]?.isSet == true,
-            )
+        // These four reads are independent, so fan them out concurrently rather than
+        // paying four serial round trips on every STT screen load / test re-list.
+        coroutineScope {
+            val optionsDeferred = async {
+                runCatching { sttProviderOptions(api.getConfigSchema()) }.getOrNull()
+            }
+            val currentDeferred = async {
+                runCatching { api.getConfig().getAsJsonObject("stt")?.get("provider")?.asString }
+                    .getOrNull()
+            }
+            val envStatusDeferred = async { runCatching { api.getEnvVars() }.getOrNull().orEmpty() }
+            // GET /api/env only reflects keys written to ~/.hermes/.env, and doesn't even
+            // surface every provider's env var — so a working key (in the process env, or
+            // under a var /api/env omits) reads as "not set" and we'd show a misleading
+            // "add key". The model picker IS the source of truth for whether a provider is
+            // usable (it's os.environ-aware), and STT shares its slug vocabulary with the
+            // LLM catalog (groq/openai/xai), so treat a provider whose model row is
+            // authenticated as key-set too. Match by slug and by env var to be safe.
+            val authedDeferred = async {
+                runCatching { listModelOptions().getOrThrow() }
+                    .getOrNull()
+                    ?.providers
+                    ?.filter { it.authenticated }
+                    .orEmpty()
+            }
+            val options = optionsDeferred.await()
+                ?.takeIf { it.isNotEmpty() }
+                ?: STT_PROVIDER_META.keys.toList()
+            val current = currentDeferred.await()
+            val envStatus = envStatusDeferred.await()
+            val authed = authedDeferred.await()
+            val authedSlugs = authed.map { it.slug }.toSet()
+            val authedEnvVars = authed.mapNotNull { it.keyEnv }.toSet()
+            val rows = options.map { slug ->
+                val (label, keyEnv) = STT_PROVIDER_META[slug] ?: (slug to null)
+                SttProviderRow(
+                    slug = slug,
+                    label = label,
+                    keyEnv = keyEnv,
+                    keySet = (keyEnv != null && envStatus[keyEnv]?.isSet == true) ||
+                        slug in authedSlugs ||
+                        (keyEnv != null && keyEnv in authedEnvVars),
+                )
+            }
+            SttConfig(currentProvider = current, providers = rows)
         }
-        SttConfig(currentProvider = current, providers = rows)
     }
 
     /**

@@ -29,8 +29,14 @@ object AppViewModelProvider {
         initializer { SessionsViewModel(extrasApp(this).repository) }
         initializer { SettingsViewModel(extrasApp(this).repository) }
         initializer { ModelsViewModel(extrasApp(this).repository) }
-        initializer { TtsViewModel(extrasApp(this).repository) }
-        initializer { SttViewModel(extrasApp(this).repository) }
+        initializer {
+            val app = extrasApp(this)
+            TtsViewModel(app.repository, AudioPlayer(app))
+        }
+        initializer {
+            val app = extrasApp(this)
+            SttViewModel(app.repository, OnDeviceTts(app))
+        }
         initializer {
             val app = extrasApp(this)
             ScheduleViewModel(app.repository, app.reminderScheduler)
