@@ -99,12 +99,17 @@ private fun UnreachableView(
             modifier = Modifier.padding(top = 8.dp),
         )
         Text(
-            text = "Start the API server in Termux:\n\n" +
-                "1. Set in ~/.hermes/.env:\n" +
-                "   API_SERVER_ENABLED=true\n" +
-                "   API_SERVER_KEY=<your key>\n" +
-                "2. Run: hermes gateway run\n" +
-                "3. Enter the same key in Settings.",
+            text = "To connect, in the Termux app:\n\n" +
+                "Pick a token — at least 8 characters.\n" +
+                "Then start Hermes one of two ways:\n\n" +
+                "A) Each launch (not saved):\n" +
+                "   HERMES_DASHBOARD_SESSION_TOKEN=your-token \\\n" +
+                "       hermes dashboard\n\n" +
+                "B) Save it once — add this line to the file\n" +
+                "   ~/.hermes/.env, then run  hermes dashboard:\n" +
+                "   HERMES_DASHBOARD_SESSION_TOKEN=your-token\n\n" +
+                "Finally, open Settings and paste the same\n" +
+                "token into the token field.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 20.dp),

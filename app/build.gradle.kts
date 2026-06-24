@@ -72,6 +72,7 @@ dependencies {
     implementation(libs.retrofit.converter.gson)
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging.interceptor)
+    implementation(libs.nanohttpd)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)

@@ -1,0 +1,15 @@
+# hermes-android device bridge
+A companion app (hermes-android) may be running on this device and can perform on-device or
+in-app actions the shell cannot. When the user asks for a device/app action — and before
+reaching for an external tool to do it — first check whether the app can handle it:
+
+1. Discover: run `curl -s http://127.0.0.1:7117/capabilities` via the terminal tool. It
+   returns a JSON array of supported actions, each with a "type" and its "params".
+2. If a matching action exists, execute it:
+   curl -s -X POST http://127.0.0.1:7117/action -H 'Content-Type: application/json' \
+        -d '{"type":"<type>","params":{<params>}}'
+   A {"ok":true} response means it ran.
+3. If the app is unreachable (connection refused) or no action matches, ignore this bridge
+   and continue with your normal tools.
+
+This server is local-only (127.0.0.1:7117) — never use any other host and never expose it.

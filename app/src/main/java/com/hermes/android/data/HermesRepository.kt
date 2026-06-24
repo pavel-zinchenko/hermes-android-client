@@ -1,6 +1,8 @@
 package com.hermes.android.data
 
+import android.content.Context
 import android.util.Base64
+import android.util.Log
 import com.hermes.android.data.dto.ConfigUpdateRequest
 import com.hermes.android.data.dto.EnvVarUpdateRequest
 import com.hermes.android.data.dto.ModelSetRequest
@@ -46,6 +48,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -61,10 +64,14 @@ import java.util.concurrent.TimeUnit
  */
 class HermesRepository(
     private val settingsStore: SettingsStore,
-    appScope: CoroutineScope,
+    private val appContext: Context,
+    private val appScope: CoroutineScope,
 ) {
     private val _settings = MutableStateFlow(HermesSettings())
     val settings: StateFlow<HermesSettings> = _settings.asStateFlow()
+
+    /** Guards the one-shot install of the device-bridge instruction prompt. */
+    private val deviceBridgePromptSynced = AtomicBoolean(false)
 
     init {
         appScope.launch {
@@ -379,7 +386,56 @@ class HermesRepository(
         val settings = settingsStore.settings.first()
         _settings.value = settings
         gateway.connect(settings.gatewayWsUrl)
-        gateway.connectionState.value == ConnectionState.OPEN
+        val open = gateway.connectionState.value == ConnectionState.OPEN
+        // The server is reachable, so make sure Hermes knows about the local device
+        // bridge (a REST /api/config write). Fire-and-forget on appScope so a slow or
+        // failed config write never delays or fails the connection probe.
+        if (open) appScope.launch { ensureDeviceBridgePromptInstalled() }
+        open
+    }
+
+    /**
+     * Idempotently teaches Hermes to use the in-app loopback bridge (the
+     * [com.hermes.android.local.LocalApiServer]) by merging a managed instruction
+     * block into `agent.environment_hint` — the config field Hermes folds into the
+     * agent's system prompt on every build (read fresh in `prompt_builder.py`). The
+     * block text ships as an editable asset, so it never lives in code. It's written
+     * over the REST `/api/config` round-trip (GET → merge → PUT), the same path
+     * [setSttProvider] uses. Runs at most once per process; the merge preserves any
+     * user-authored hint and only the region between our sentinels is app-owned.
+     */
+    private suspend fun ensureDeviceBridgePromptInstalled() {
+        // Claim the one-shot up front so concurrent probes (the ConnectionGate and the
+        // Settings "test connection" button can both be in flight) don't each run the
+        // config round-trip; reset on failure so a later probe retries.
+        if (!deviceBridgePromptSynced.compareAndSet(false, true)) return
+        runCatching {
+            val blockText = appContext.assets.open(DEVICE_BRIDGE_PROMPT_ASSET)
+                .bufferedReader().use { it.readText() }
+                .trim()
+            if (blockText.isEmpty()) return
+
+            // PUT /api/config overwrites the whole config, so read it, merge our block
+            // into agent.environment_hint, and send it all back (mirrors setSttProvider).
+            val api = api()
+            val config = api.getConfig()
+            val agent = if (config.has("agent") && config.get("agent").isJsonObject) {
+                config.getAsJsonObject("agent")
+            } else {
+                com.google.gson.JsonObject().also { config.add("agent", it) }
+            }
+            val current = agent.get("environment_hint")
+                ?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+
+            val merged = mergeManagedBlock(current, blockText)
+            if (merged != current) {
+                agent.addProperty("environment_hint", merged)
+                api.updateConfig(ConfigUpdateRequest(config))
+            }
+        }.onFailure {
+            deviceBridgePromptSynced.set(false)
+            Log.w("HermesRepository", "device-bridge prompt sync skipped", it)
+        }
     }
 
     // --- Gateway chat ------------------------------------------------------
@@ -774,10 +830,40 @@ class HermesRepository(
         DecodedAudio(bytes = bytes, mime = mime)
     }.recoverCatching { throw VoiceServiceException(VoiceService.TEXT_TO_SPEECH, it) }
 
+    /**
+     * Merges the device-bridge instruction [block] into an existing [current]
+     * `custom_prompt`, owning only the region between the sentinel markers:
+     *  - empty/blank [current] → just the wrapped block;
+     *  - markers already present → replace whatever is between them (picks up asset edits);
+     *  - markers absent → append the wrapped block, preserving the user's prompt.
+     */
+    private fun mergeManagedBlock(current: String, block: String): String {
+        val wrapped = "$BRIDGE_MARKER_START\n$block\n$BRIDGE_MARKER_END"
+        if (current.isBlank()) return wrapped
+        val existing = BRIDGE_BLOCK_REGEX.find(current)
+        return if (existing != null) {
+            current.replaceRange(existing.range, wrapped)
+        } else {
+            "${current.trimEnd()}\n\n$wrapped"
+        }
+    }
+
     private companion object {
         /** Retries prompt.submit while a just-interrupted session is still busy (4009). */
         const val BUSY_RETRY_LIMIT = 8
         const val BUSY_RETRY_DELAY_MS = 150L
+
+        /** Editable asset holding the device-bridge instruction text (no prompt in code). */
+        const val DEVICE_BRIDGE_PROMPT_ASSET = "device_bridge_prompt.txt"
+
+        // Sentinels delimiting the app-owned region of Hermes's custom_prompt. Only the
+        // text between these is managed; anything else the user wrote is left untouched.
+        const val BRIDGE_MARKER_START = "<!-- hermes-android:start -->"
+        const val BRIDGE_MARKER_END = "<!-- hermes-android:end -->"
+        val BRIDGE_BLOCK_REGEX = Regex(
+            "${Regex.escape(BRIDGE_MARKER_START)}.*?${Regex.escape(BRIDGE_MARKER_END)}",
+            RegexOption.DOT_MATCHES_ALL,
+        )
 
         /**
          * STT provider slug → (display label, API-key env var). The dashboard
