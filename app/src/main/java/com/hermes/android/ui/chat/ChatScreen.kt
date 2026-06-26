@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,6 +60,7 @@ import com.hermes.android.ui.AppViewModelProvider
 fun ChatScreen(
     onBack: () -> Unit,
     onOpenVoice: () -> Unit,
+    onOpenCall: () -> Unit,
     viewModel: ChatSessionViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -119,6 +121,9 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenCall) {
+                        Icon(Icons.Filled.Call, contentDescription = "Call mode")
+                    }
                     IconButton(onClick = onOpenVoice) {
                         Icon(Icons.Filled.Mic, contentDescription = "Voice mode")
                     }

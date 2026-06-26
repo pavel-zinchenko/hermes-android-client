@@ -17,6 +17,21 @@ class AudioPlayer(private val context: Context) {
     private var tempFile: File? = null
 
     /**
+     * Call-mode hint. Playback stays on the normal media path (forcing the
+     * voice-communication audio mode starves the open mic on many devices, which
+     * broke continuous call capture); echo during barge-in is handled by the
+     * capture-side [android.media.audiofx.AcousticEchoCanceler] and a raised
+     * voice-activity threshold while a reply plays. Kept as a hook so call-specific
+     * routing can be reintroduced if needed.
+     */
+    @Volatile private var communicationMode = false
+
+    /** Marks the start/end of a call. Currently a no-op beyond the flag (see above). */
+    fun setCommunicationMode(enabled: Boolean) {
+        communicationMode = enabled
+    }
+
+    /**
      * Plays [bytes] of the given [mime]. [onFinished] fires once on completion or
      * error so callers can advance their state machine without leaking.
      */

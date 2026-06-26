@@ -3,6 +3,7 @@ package com.hermes.android.audio
 import android.content.Context
 import android.media.MediaPlayer
 import android.net.Uri
+import com.hermes.android.data.DecodedAudio
 
 /**
  * Loops an optional user-chosen audio file (a SAF content URI) to fill the gaps
@@ -75,6 +76,25 @@ class ThinkingSoundPlayer(private val context: Context) {
         try {
             if (mp.isPlaying) mp.pause()
         } catch (_: IllegalStateException) {
+        }
+    }
+
+    /**
+     * Reads [uri]'s raw bytes + MIME so the call-mode filler can be played through the
+     * clip player (which applies the right echo strategy) instead of this standalone
+     * MediaPlayer. Returns null for a blank/unreadable URI.
+     */
+    fun loadClip(uri: String?): DecodedAudio? {
+        if (uri.isNullOrBlank()) return null
+        return try {
+            val u = Uri.parse(uri)
+            val bytes = context.contentResolver.openInputStream(u)?.use { it.readBytes() }
+                ?: return null
+            if (bytes.isEmpty()) return null
+            val mime = context.contentResolver.getType(u) ?: "audio/mpeg"
+            DecodedAudio(bytes, mime)
+        } catch (_: Exception) {
+            null
         }
     }
 

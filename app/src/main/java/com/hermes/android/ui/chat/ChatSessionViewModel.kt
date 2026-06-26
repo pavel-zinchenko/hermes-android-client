@@ -5,6 +5,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermes.android.audio.AudioDecoder
 import com.hermes.android.audio.AudioPlayer
+import com.hermes.android.audio.CallClipPlayer
+import com.hermes.android.audio.CallSession
+import com.hermes.android.audio.CallSttEvent
+import com.hermes.android.audio.CallTranscriber
 import com.hermes.android.audio.OnDeviceTts
 import com.hermes.android.audio.SentenceChunker
 import com.hermes.android.audio.SpeechSanitizer
@@ -12,6 +16,7 @@ import com.hermes.android.audio.ThinkingSoundPlayer
 import com.hermes.android.audio.VoiceRecorder
 import com.hermes.android.data.DecodedAudio
 import com.hermes.android.data.HermesRepository
+import com.hermes.android.data.SttEngine
 import com.hermes.android.data.VoiceEngine
 import com.hermes.android.data.gateway.ChatEvent
 import com.hermes.android.data.gateway.InteractiveRequest
@@ -23,9 +28,12 @@ import com.hermes.android.ui.toUserMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,6 +44,23 @@ import kotlinx.coroutines.withContext
 
 /** Phases of one push-to-talk voice turn. */
 enum class VoicePhase { IDLE, RECORDING, TRANSCRIBING, RESPONDING }
+
+/**
+ * How long a spoken-playback gap must persist before the filler (thinking sound)
+ * starts, so quick replies stay silent and it only sounds during real "thinking".
+ */
+private const val FILLER_DELAY_MS = 1_000L
+
+/**
+ * Reasoning effort applied while a voice call is active, so replies come back as fast
+ * as possible. "none" fully disables the LLM's extended thinking. The user's prior
+ * setting is saved on call start and restored on call end (the gateway's reasoning
+ * toggle is global, so it's only "off" for the duration of the call).
+ */
+private const val CALL_REASONING = "none"
+
+/** Phases of continuous call mode (the mic stays open; no button per turn). */
+enum class CallState { LISTENING, THINKING, SPEAKING }
 
 /** Ends a voice turn early with a user-facing message (e.g. an interactive request). */
 private class TurnAbort(val userMessage: String) : RuntimeException(userMessage)
@@ -58,6 +83,16 @@ internal fun isLikelyNoise(transcript: String): Boolean {
 }
 
 /**
+ * True if [transcript] carries actual speech worth sending: at least two characters
+ * and at least one letter. Rejects blank/whitespace results and punctuation-only
+ * hallucinations (e.g. "." or "…") that STT returns for noise.
+ */
+internal fun hasSpeechContent(transcript: String): Boolean {
+    val trimmed = transcript.trim()
+    return trimmed.length >= 2 && trimmed.any { it.isLetter() }
+}
+
+/**
  * Single state for one chat session, shared by the text-chat and voice screens.
  * [messages] is the one source of truth both screens render and append to, so a
  * voice turn shows up instantly in text chat and vice versa. [sending]/[statusLine]/
@@ -75,6 +110,13 @@ data class ChatSessionUiState(
      */
     val pendingRequests: List<InteractiveRequest> = emptyList(),
     val phase: VoicePhase = VoicePhase.IDLE,
+    /** True while a continuous voice call is in progress (drives the call screen). */
+    val callActive: Boolean = false,
+    /** Whether the call mic is live; false = muted (still in the call, not listening). */
+    val micEnabled: Boolean = false,
+    val callState: CallState = CallState.LISTENING,
+    /** Live interim transcript shown while the user speaks (on-device STT only). */
+    val interimTranscript: String = "",
 )
 
 /**
@@ -98,6 +140,11 @@ class ChatSessionViewModel(
     private val player: AudioPlayer,
     private val thinkingSound: ThinkingSoundPlayer,
     private val onDeviceTts: OnDeviceTts,
+    /**
+     * Builds the call-mode transcriber + matching clip player for the chosen STT
+     * engine (on-device / server half-duplex, or full-duplex with software AEC).
+     */
+    private val callSessionFor: (SttEngine) -> CallSession,
     savedStateHandle: SavedStateHandle,
     /**
      * Invoked when a turn finishes, so the app can re-sync reminders: the agent
@@ -117,8 +164,24 @@ class ChatSessionViewModel(
     /** The in-flight text streaming turn, so [stop] can cancel it. */
     private var streamJob: Job? = null
 
-    /** The in-flight voice transcribe → respond turn, so a new press can interrupt it. */
+    /**
+     * The in-flight voice transcribe → respond turn, so a new press can interrupt it.
+     * In call mode this holds the current reply job, so [cancelActiveTurn] tears down a
+     * call reply (barge-in) the same way it tears down a push-to-talk turn.
+     */
     private var turnJob: Job? = null
+
+    /** Collects the call transcriber's events while a call is active. */
+    private var callJob: Job? = null
+
+    /** The active call transcriber (on-device or server), or null when not in a call. */
+    private var transcriber: CallTranscriber? = null
+
+    /** The active call's clip player (half- or full-duplex), or null when not in a call. */
+    private var clipPlayer: CallClipPlayer? = null
+
+    /** The user's reasoning effort before a call disabled it, restored when the call ends. */
+    private var savedReasoning: String? = null
 
     /**
      * True only while a server turn is genuinely in flight — between `prompt.submit`
@@ -313,6 +376,9 @@ class ChatSessionViewModel(
         turnJob?.cancel()
         turnJob = null
         player.stop()
+        // Also stop the call clip player so a barge-in cuts full-duplex playback
+        // (whose audio rides an AudioTrack the AudioPlayer above doesn't own).
+        clipPlayer?.stop()
         thinkingSound.release()
         if (interruptServer) viewModelScope.launch { repository.interrupt(sessionId) }
     }
@@ -346,15 +412,67 @@ class ChatSessionViewModel(
         append(Sender.USER, transcript)
 
         _state.update { it.copy(phase = VoicePhase.RESPONDING) }
+        try {
+            val ttsFailed = speakStreamedResponse(transcript)
+            if (currentCoroutineContext().isActive) {
+                // The reply text is on screen; if we had speech to play but every
+                // synthesis failed, say so rather than going quietly idle.
+                _state.update {
+                    it.copy(
+                        phase = VoicePhase.IDLE,
+                        error = if (ttsFailed) "Couldn't play the reply audio." else it.error,
+                    )
+                }
+            }
+        } catch (abort: TurnAbort) {
+            player.stop()
+            failVoiceTurn(abort.userMessage)
+        } catch (c: CancellationException) {
+            // A new recording interrupted this turn — startRecording owns cleanup.
+            throw c
+        } catch (_: Exception) {
+            // Anything unexpected ends the turn cleanly rather than leaving the UI
+            // stuck on "Hermes is responding…".
+            player.stop()
+            failVoiceTurn("Hermes ran into a problem while responding.")
+        }
+    }
+
+    /**
+     * Streams Hermes's reply to [transcript] into a fresh assistant turn and speaks it
+     * sentence by sentence — shared by push-to-talk voice and continuous call mode.
+     * Returns true if speech was enqueued but every synthesis failed (so the caller can
+     * surface "couldn't play audio"). [onFirstReply] fires once when the first reply
+     * delta arrives (callers use it to flip their UI from "thinking" to "speaking").
+     *
+     * [clipPlayer], when supplied (call mode), plays each spoken clip instead of the
+     * push-to-talk [player]: half-duplex gates the mic around each clip (preventing
+     * self-capture), full-duplex streams it through the echo canceller with the mic
+     * left open. In call mode the filler/thinking sound is skipped so the gaps stay
+     * silent for clean listening / barge-in.
+     *
+     * Throws [TurnAbort] on an interactive request / server failure, and
+     * [CancellationException] if the turn is interrupted (a new recording or a
+     * barge-in) — the caller owns the post-cancellation cleanup.
+     */
+    private suspend fun speakStreamedResponse(
+        transcript: String,
+        onFirstReply: (() -> Unit)? = null,
+        clipPlayer: CallClipPlayer? = null,
+    ): Boolean {
         // Pick the synthesizer once for the whole turn so a mid-turn settings change
         // can't split one reply across two engines.
         val engine = repository.voiceEngine()
-        // The filler sound covers every gap where nothing is playing but the turn is
-        // still going. Prepare it once for the whole turn so it resumes instantly on
-        // each gap; start it now to cover the wait for the first sentence.
+        // Filler (thinking sound): an optional sound that covers a gap only once it has
+        // lasted [FILLER_DELAY_MS], so quick replies stay silent. Push-to-talk loops it
+        // via [thinkingSound]'s own MediaPlayer; call mode plays it through [clipPlayer]
+        // so the per-mode echo strategy (full-duplex AEC / half-duplex mic gating)
+        // applies to the filler too — otherwise the open mic would capture it. A blank
+        // URI just leaves the gaps silent.
         val fillerUri = repository.thinkingSoundUri()
-        thinkingSound.prepare(fillerUri)
-        thinkingSound.resume()
+        val fillerClip: DecodedAudio? =
+            if (clipPlayer != null) thinkingSound.loadClip(fillerUri) else null
+        if (clipPlayer == null) thinkingSound.prepare(fillerUri)
 
         val bubbleId = "assistant_${System.currentTimeMillis()}"
         val chunker = SentenceChunker()
@@ -363,6 +481,7 @@ class ChatSessionViewModel(
         // from a normal one.
         var spoke = false
         var synthesizedAny = false
+        var firstReply = true
         try {
             coroutineScope {
                 // Completed text fragments awaiting synthesis; UNLIMITED so feeding it
@@ -390,20 +509,27 @@ class ChatSessionViewModel(
                 val playback = launch {
                     try {
                         while (true) {
-                            // Play a ready clip immediately. If none is ready, resume the
-                            // (already-prepared) filler to bridge the gap and wait for the
-                            // next; a closed-and-drained channel ends playback.
+                            // Play a ready clip immediately. If none is ready, bridge the
+                            // gap with the filler (started only after FILLER_DELAY_MS, so a
+                            // quick reply stays silent) and wait for the next clip; a
+                            // closed-and-drained channel ends playback.
                             var clip = audios.tryReceive().getOrNull()
                             if (clip == null) {
-                                thinkingSound.resume()
+                                val filler = launch { runFiller(clipPlayer, fillerClip) }
                                 clip = audios.receiveCatching().getOrNull()
+                                // Stop the filler before the real clip plays; cancelAndJoin
+                                // ensures its playback is fully torn down first (no overlap).
+                                filler.cancelAndJoin()
                                 if (clip == null) break
                             }
-                            // Pause the filler only while a real clip plays; the next
-                            // iteration resumes it if the following clip isn't ready.
-                            thinkingSound.pause()
                             try {
-                                player.playAndAwait(clip.bytes, clip.mime)
+                                // Call mode routes through the clip player (its echo
+                                // strategy); push-to-talk plays directly.
+                                if (clipPlayer != null) {
+                                    clipPlayer.play(clip)
+                                } else {
+                                    player.playAndAwait(clip.bytes, clip.mime)
+                                }
                             } catch (c: CancellationException) {
                                 throw c
                             } catch (_: Exception) {
@@ -422,14 +548,28 @@ class ChatSessionViewModel(
                     when (event) {
                         ChatEvent.Start -> ensureBubble(bubbleId)
                         is ChatEvent.Delta -> {
+                            if (firstReply) { firstReply = false; onFirstReply?.invoke() }
                             appendText(bubbleId, event.text)
                             for (fragment in chunker.push(event.text)) {
                                 sentences.send(fragment)
                                 spoke = true
                             }
                         }
-                        is ChatEvent.Thinking -> appendThinking(bubbleId, event.text)
-                        is ChatEvent.ToolStart -> addTool(bubbleId, event)
+                        is ChatEvent.Thinking -> {
+                            // The answer text before this thinking block is a finished
+                            // thought: end of an answer segment is a sentence boundary
+                            // (like a period) even without trailing punctuation. Flush it
+                            // so a short reply ("Done") is spoken now instead of waiting
+                            // for the whole turn — the model often answers, then thinks on.
+                            chunker.drain()?.let { sentences.send(it); spoke = true }
+                            appendThinking(bubbleId, event.text)
+                        }
+                        is ChatEvent.ToolStart -> {
+                            // Likewise a tool call ends the current answer segment; speak
+                            // what's buffered before the tool runs.
+                            chunker.drain()?.let { sentences.send(it); spoke = true }
+                            addTool(bubbleId, event)
+                        }
                         is ChatEvent.ToolComplete -> completeTool(bubbleId, event)
                         is ChatEvent.Status -> {}
                         is ChatEvent.Complete -> {
@@ -466,31 +606,35 @@ class ChatSessionViewModel(
                 synth.join()
                 playback.join()
             }
-            if (currentCoroutineContext().isActive) {
-                // The reply text is on screen; if we had speech to play but every
-                // synthesis failed, say so rather than going quietly idle.
-                val ttsFailed = spoke && !synthesizedAny
-                _state.update {
-                    it.copy(
-                        phase = VoicePhase.IDLE,
-                        error = if (ttsFailed) "Couldn't play the reply audio." else it.error,
-                    )
-                }
-            }
-        } catch (abort: TurnAbort) {
-            player.stop()
-            failVoiceTurn(abort.userMessage)
-        } catch (c: CancellationException) {
-            // A new recording interrupted this turn — startRecording owns cleanup.
-            throw c
-        } catch (_: Exception) {
-            // Anything unexpected ends the turn cleanly rather than leaving the UI
-            // stuck on "Hermes is responding…".
-            player.stop()
-            failVoiceTurn("Hermes ran into a problem while responding.")
         } finally {
             // Make sure the looping filler is never left running once the turn ends.
             thinkingSound.release()
+        }
+        // Speech was enqueued but nothing synthesized → a wholly-failed TTS turn.
+        return spoke && !synthesizedAny
+    }
+
+    /**
+     * Bridges a gap in spoken playback with the filler, but only after
+     * [FILLER_DELAY_MS] so a quick reply stays silent. Push-to-talk loops the
+     * [thinkingSound] MediaPlayer; call mode loops [fillerClip] through [clipPlayer]
+     * so the per-mode echo strategy applies (full-duplex cancels it, half-duplex gates
+     * the mic). Cancelling this coroutine stops the filler and tears down its playback.
+     */
+    private suspend fun runFiller(clipPlayer: CallClipPlayer?, fillerClip: DecodedAudio?) {
+        delay(FILLER_DELAY_MS)
+        if (clipPlayer != null) {
+            val fc = fillerClip ?: return
+            // playLoop repeats the clip until this coroutine is cancelled, decoding /
+            // preparing it once rather than per repetition.
+            clipPlayer.playLoop(fc)
+        } else {
+            thinkingSound.resume()
+            try {
+                awaitCancellation()
+            } finally {
+                thinkingSound.pause()
+            }
         }
     }
 
@@ -521,6 +665,170 @@ class ChatSessionViewModel(
     private suspend fun failVoiceTurn(message: String) {
         if (!currentCoroutineContext().isActive) return
         _state.update { it.copy(phase = VoicePhase.IDLE, error = message) }
+    }
+
+    // --- Continuous voice call --------------------------------------------
+
+    /**
+     * Starts a continuous voice call: the mic stays open (no button per turn), each
+     * utterance is transcribed and answered, and the reply is spoken. The STT engine
+     * (on-device [SpeechRecognizer] vs server VAD) is chosen from settings once per
+     * call. Cancels any in-flight turn first so the single session never has two
+     * turns racing on it.
+     */
+    fun startCall() {
+        if (_state.value.callActive) return
+        cancelActiveTurn()
+        player.setCommunicationMode(true)
+        _state.update {
+            it.copy(
+                callActive = true,
+                micEnabled = true,
+                callState = CallState.LISTENING,
+                interimTranscript = "",
+                phase = VoicePhase.IDLE,
+                error = null,
+            )
+        }
+        callJob = viewModelScope.launch {
+            // Save the user's reasoning effort BEFORE we start listening, so the first
+            // call turn (which sets CALL_REASONING) can't race this read and capture our
+            // own sentinel — which endCall would then "restore", permanently disabling
+            // reasoning globally. Because the override runs from an utterance collected
+            // below, sequencing the save first guarantees it never sees CALL_REASONING;
+            // the extra guard is belt-and-suspenders against a left-over value.
+            repository.reasoningEffort().onSuccess { value ->
+                if (value != CALL_REASONING) savedReasoning = value
+            }
+            val session = callSessionFor(repository.sttEngine())
+            val t = session.transcriber
+            transcriber = t
+            clipPlayer = session.clipPlayer
+            try {
+                t.start()
+                t.events.collect { handleCallEvent(it) }
+            } finally {
+                t.stop()
+            }
+        }
+    }
+
+    /**
+     * Routes one transcriber event. The collector must never block on a reply (it has
+     * to stay free to receive the next [CallSttEvent.SpeechStarted] for barge-in), so
+     * the reply runs on its own [turnJob].
+     */
+    private fun handleCallEvent(event: CallSttEvent) {
+        android.util.Log.d(
+            "CallCapture",
+            "vm event=${event::class.simpleName} callState=${_state.value.callState} " +
+                "mic=${_state.value.micEnabled} active=${_state.value.callActive}",
+        )
+        when (event) {
+            // Barge-in: the user started talking over a thinking/speaking reply.
+            CallSttEvent.SpeechStarted -> if (_state.value.callState != CallState.LISTENING) {
+                cancelActiveTurn()
+                transcriber?.setHermesSpeaking(false)
+                _state.update { it.copy(callState = CallState.LISTENING) }
+            }
+
+            is CallSttEvent.Partial ->
+                _state.update { it.copy(interimTranscript = event.text) }
+
+            is CallSttEvent.Utterance -> {
+                _state.update { it.copy(interimTranscript = "") }
+                val text = event.text.trim()
+                if (!hasSpeechContent(text) || isLikelyNoise(text)) return
+                // A fresh utterance always supersedes any reply still in flight (covers
+                // a barge-in where no onset event fired, e.g. the server VAD consumed it).
+                cancelActiveTurn()
+                append(Sender.USER, text)
+                _state.update { it.copy(callState = CallState.THINKING) }
+                turnJob = viewModelScope.launch { runCallTurn(text) }
+            }
+
+            is CallSttEvent.Failure ->
+                _state.update { it.copy(error = event.message) }
+        }
+    }
+
+    private suspend fun runCallTurn(transcript: String) {
+        try {
+            // Disable the LLM's extended thinking for call replies (fastest response).
+            // Best-effort and re-applied each turn so it also takes once the session's
+            // agent is built; the prior setting is restored on endCall.
+            repository.setReasoningEffort(sessionId, CALL_REASONING)
+            val ttsFailed = speakStreamedResponse(
+                transcript,
+                onFirstReply = { _state.update { it.copy(callState = CallState.SPEAKING) } },
+                // The clip player owns the echo strategy: half-duplex gates the mic
+                // around each clip, full-duplex streams through the echo canceller.
+                clipPlayer = clipPlayer,
+            )
+            if (currentCoroutineContext().isActive) {
+                transcriber?.setHermesSpeaking(false)
+                _state.update {
+                    it.copy(
+                        callState = CallState.LISTENING,
+                        error = if (ttsFailed) "Couldn't play the reply audio." else it.error,
+                    )
+                }
+            }
+        } catch (abort: TurnAbort) {
+            player.stop()
+            failCallTurn(abort.userMessage)
+        } catch (c: CancellationException) {
+            // Barge-in / mute interrupted this reply — the caller owns the cleanup.
+            throw c
+        } catch (_: Exception) {
+            player.stop()
+            failCallTurn("Hermes ran into a problem while responding.")
+        }
+    }
+
+    /** Returns the call to LISTENING with [message], unless a newer turn took over. */
+    private suspend fun failCallTurn(message: String) {
+        if (!currentCoroutineContext().isActive) return
+        transcriber?.setHermesSpeaking(false)
+        _state.update { it.copy(callState = CallState.LISTENING, error = message) }
+    }
+
+    /** Mutes/unmutes the call mic. Muting also stops any reply in progress. */
+    fun setMicEnabled(enabled: Boolean) {
+        if (!_state.value.callActive) return
+        _state.update { it.copy(micEnabled = enabled) }
+        transcriber?.setMicEnabled(enabled)
+        if (!enabled) {
+            cancelActiveTurn()
+            transcriber?.setHermesSpeaking(false)
+            _state.update { it.copy(callState = CallState.LISTENING, interimTranscript = "") }
+        }
+    }
+
+    /** Ends the call and restores normal audio routing. */
+    fun endCall() {
+        callJob?.cancel()
+        callJob = null
+        cancelActiveTurn()
+        transcriber?.stop()
+        transcriber = null
+        clipPlayer = null
+        player.setCommunicationMode(false)
+        // Restore the reasoning effort the call temporarily disabled, so text chat /
+        // the CLI think normally again. Best-effort on a fresh scope so it still runs
+        // after callJob was cancelled above.
+        savedReasoning?.let { prior ->
+            savedReasoning = null
+            viewModelScope.launch { repository.setReasoningEffort(sessionId, prior) }
+        }
+        _state.update {
+            it.copy(
+                callActive = false,
+                micEnabled = false,
+                callState = CallState.LISTENING,
+                interimTranscript = "",
+            )
+        }
     }
 
     private fun append(sender: Sender, text: String) {
@@ -613,8 +921,11 @@ class ChatSessionViewModel(
     fun clearError() = _state.update { it.copy(error = null) }
 
     override fun onCleared() {
+        callJob?.cancel()
+        transcriber?.stop()
         recorder.cancel()
         player.stop()
+        player.setCommunicationMode(false)
         thinkingSound.release()
         onDeviceTts.shutdown()
     }

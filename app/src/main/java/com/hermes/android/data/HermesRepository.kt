@@ -213,11 +213,16 @@ class HermesRepository(
 
     suspend fun updateVoiceEngine(engine: VoiceEngine) = settingsStore.updateVoiceEngine(engine)
 
+    suspend fun updateSttEngine(engine: SttEngine) = settingsStore.updateSttEngine(engine)
+
     /** Content URI of the looped "thinking" sound, or empty if none is set. */
     suspend fun thinkingSoundUri(): String = settingsStore.settings.first().thinkingSoundUri
 
     /** The engine that should speak replies in voice mode (server vs on-device). */
     suspend fun voiceEngine(): VoiceEngine = settingsStore.settings.first().voiceEngine
+
+    /** The engine that transcribes speech in continuous call mode (on-device vs server). */
+    suspend fun sttEngine(): SttEngine = settingsStore.settings.first().sttEngine
 
     /** Lightweight reachability probe; true iff /health responds with status ok. */
     suspend fun checkHealth(): Result<Boolean> = runCatching {
@@ -275,6 +280,34 @@ class HermesRepository(
         _settings.value = settings
         gateway.connect(settings.gatewayWsUrl)
         gateway.call("model.disconnect", mapOf("slug" to slug))
+        Unit
+    }
+
+    /**
+     * Current reasoning effort ("none"/"minimal"/"low"/"medium"/"high"/"xhigh") via
+     * `config.get`, defaulting to "medium" if unknown. Call mode reads this to save
+     * the user's setting before temporarily disabling reasoning for faster replies.
+     */
+    suspend fun reasoningEffort(): Result<String> = runCatching {
+        val settings = settingsStore.settings.first()
+        _settings.value = settings
+        gateway.connect(settings.gatewayWsUrl)
+        val result = gateway.call("config.get", mapOf("key" to "reasoning"))
+        result.asJsonObject?.get("value")?.takeIf { !it.isJsonNull }?.asString ?: "medium"
+    }
+
+    /**
+     * Sets the reasoning effort for [storedId]'s live agent via `config.set`. NOTE: the
+     * gateway also writes this to global config, so while a call is active the level is
+     * effectively global; call mode sets "none" on each turn and restores the prior
+     * value on exit. [value] is a level like "none"/"minimal"/"medium".
+     */
+    suspend fun setReasoningEffort(storedId: String, value: String): Result<Unit> = runCatching {
+        val sid = resolveLiveSid(storedId)
+        gateway.call(
+            "config.set",
+            mapOf("session_id" to sid, "key" to "reasoning", "value" to value),
+        )
         Unit
     }
 

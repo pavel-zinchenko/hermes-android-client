@@ -3,6 +3,7 @@ package com.hermes.android.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermes.android.data.HermesRepository
+import com.hermes.android.data.SttEngine
 import com.hermes.android.data.VoiceEngine
 import com.hermes.android.ui.toUserMessage
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,7 @@ data class SettingsUiState(
     val apiKey: String = "",
     val thinkingSoundUri: String = "",
     val voiceEngine: VoiceEngine = VoiceEngine.SERVER,
+    val sttEngine: SttEngine = SttEngine.ON_DEVICE,
     val loaded: Boolean = false,
     val testResult: TestResult = TestResult.Idle,
 )
@@ -44,6 +46,7 @@ class SettingsViewModel(
                     apiKey = current.apiKey,
                     thinkingSoundUri = current.thinkingSoundUri,
                     voiceEngine = current.voiceEngine,
+                    sttEngine = current.sttEngine,
                     loaded = true,
                 )
             }
@@ -82,6 +85,12 @@ class SettingsViewModel(
     fun setVoiceEngine(engine: VoiceEngine) {
         _state.update { it.copy(voiceEngine = engine) }
         viewModelScope.launch { repository.updateVoiceEngine(engine) }
+    }
+
+    /** Persists the chosen call-mode STT engine immediately (a simple toggle). */
+    fun setSttEngine(engine: SttEngine) {
+        _state.update { it.copy(sttEngine = engine) }
+        viewModelScope.launch { repository.updateSttEngine(engine) }
     }
 
     /**

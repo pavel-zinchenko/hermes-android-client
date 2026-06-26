@@ -22,6 +22,7 @@ import com.hermes.android.ui.voice.SttViewModel
 import com.hermes.android.ui.voice.TtsDetailScreen
 import com.hermes.android.ui.voice.TtsListScreen
 import com.hermes.android.ui.voice.TtsViewModel
+import com.hermes.android.ui.voice.CallScreen
 import com.hermes.android.ui.voice.VoiceScreen
 
 object Routes {
@@ -46,6 +47,7 @@ object Routes {
     fun session(sessionId: String) = "session/$sessionId"
     const val CHAT = "chat"
     const val VOICE = "voice"
+    const val CALL = "call"
 }
 
 @Composable
@@ -85,6 +87,7 @@ fun HermesNavHost() {
                 ChatScreen(
                     onBack = { navController.popBackStack(Routes.SESSION, inclusive = true) },
                     onOpenVoice = { navController.navigate(Routes.VOICE) },
+                    onOpenCall = { navController.navigate(Routes.CALL) },
                     viewModel = vm,
                 )
             }
@@ -93,6 +96,16 @@ fun HermesNavHost() {
                 val parentEntry = remember(entry) { navController.getBackStackEntry(Routes.SESSION) }
                 val vm: ChatSessionViewModel = viewModel(parentEntry, factory = AppViewModelProvider.Factory)
                 VoiceScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenCall = { navController.navigate(Routes.CALL) },
+                    viewModel = vm,
+                )
+            }
+
+            composable(Routes.CALL) { entry ->
+                val parentEntry = remember(entry) { navController.getBackStackEntry(Routes.SESSION) }
+                val vm: ChatSessionViewModel = viewModel(parentEntry, factory = AppViewModelProvider.Factory)
+                CallScreen(
                     onBack = { navController.popBackStack() },
                     viewModel = vm,
                 )

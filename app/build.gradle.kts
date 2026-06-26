@@ -10,12 +10,28 @@ android {
     namespace = "com.hermes.android"
     compileSdk = 36
 
+    // Pin the NDK so the vendored WebRTC AECM (full-duplex echo cancellation)
+    // compiles reproducibly. Install once: sdkmanager "ndk;27.2.12479018".
+    ndkVersion = "27.2.12479018"
+
     defaultConfig {
         applicationId = "com.hermes.android"
         minSdk = 29
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            // x86 (32-bit) deliberately omitted; these cover devices + emulators.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {

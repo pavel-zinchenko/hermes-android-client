@@ -20,6 +20,30 @@ enum class VoiceEngine {
     ON_DEVICE,
 }
 
+/** Which engine transcribes speech in the continuous voice-call mode. */
+enum class SttEngine {
+    /**
+     * Android's built-in [android.speech.SpeechRecognizer] (offline on API 31+,
+     * free, native endpointing + live partial transcripts). Owns the mic, so
+     * barge-in is best-effort.
+     */
+    ON_DEVICE,
+
+    /**
+     * Client-side voice-activity detection feeding the server's
+     * `/api/audio/transcribe` (the configured STT provider). Half-duplex: the mic is
+     * muted while a reply plays, so barge-in only works between sentences. No partials.
+     */
+    SERVER,
+
+    /**
+     * Like [SERVER], but keeps the mic open during playback and cancels the speaker's
+     * echo in software (vendored WebRTC AECM). Enables true mid-sentence barge-in at
+     * the cost of more CPU; server STT only (the canceller owns the mic). No partials.
+     */
+    FULL_DUPLEX,
+}
+
 data class HermesSettings(
     /**
      * Base URL of the single Hermes backend — the dashboard (`hermes dashboard`,
@@ -40,6 +64,12 @@ data class HermesSettings(
      * (higher-quality neural voices); [VoiceEngine.ON_DEVICE] runs offline.
      */
     val voiceEngine: VoiceEngine = VoiceEngine.SERVER,
+    /**
+     * Which engine transcribes speech in continuous call mode. Defaults to
+     * [SttEngine.ON_DEVICE] (offline, live partials); [SttEngine.SERVER] uses the
+     * configured server STT provider with reliable barge-in.
+     */
+    val sttEngine: SttEngine = SttEngine.ON_DEVICE,
 ) {
     /** Normalized server URL guaranteed to end with a single trailing slash. */
     val normalizedServerUrl: String
@@ -82,6 +112,7 @@ class SettingsStore(private val context: Context) {
         val API_KEY = stringPreferencesKey("voice_api_key")
         val THINKING_SOUND_URI = stringPreferencesKey("thinking_sound_uri")
         val VOICE_ENGINE = stringPreferencesKey("voice_engine")
+        val STT_ENGINE = stringPreferencesKey("stt_engine")
     }
 
     val settings: Flow<HermesSettings> = context.dataStore.data.map { prefs ->
@@ -94,6 +125,9 @@ class SettingsStore(private val context: Context) {
             voiceEngine = prefs[Keys.VOICE_ENGINE]
                 ?.let { name -> runCatching { VoiceEngine.valueOf(name) }.getOrNull() }
                 ?: VoiceEngine.SERVER,
+            sttEngine = prefs[Keys.STT_ENGINE]
+                ?.let { name -> runCatching { SttEngine.valueOf(name) }.getOrNull() }
+                ?: SttEngine.ON_DEVICE,
         )
     }
 
@@ -110,5 +144,9 @@ class SettingsStore(private val context: Context) {
 
     suspend fun updateVoiceEngine(engine: VoiceEngine) {
         context.dataStore.edit { prefs -> prefs[Keys.VOICE_ENGINE] = engine.name }
+    }
+
+    suspend fun updateSttEngine(engine: SttEngine) {
+        context.dataStore.edit { prefs -> prefs[Keys.STT_ENGINE] = engine.name }
     }
 }

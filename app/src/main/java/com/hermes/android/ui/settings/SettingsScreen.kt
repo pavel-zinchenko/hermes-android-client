@@ -49,6 +49,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hermes.android.data.SttEngine
 import com.hermes.android.data.VoiceEngine
 import com.hermes.android.ui.AppViewModelProvider
 
@@ -221,6 +222,37 @@ fun SettingsScreen(
                         selected = state.voiceEngine == engine,
                         onClick = { viewModel.setVoiceEngine(engine) },
                         shape = SegmentedButtonDefaults.itemShape(index, engineOptions.size),
+                    ) {
+                        Text(label)
+                    }
+                }
+            }
+
+            Text(
+                text = "Voice input",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "Which engine transcribes speech in call mode. On-device works " +
+                    "offline and shows live text; Server uses your configured STT " +
+                    "provider. Full-duplex also uses the server but keeps the mic open " +
+                    "during replies, cancelling the echo on-device so you can interrupt " +
+                    "mid-sentence (uses more CPU).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val sttOptions = listOf(
+                SttEngine.ON_DEVICE to "On-device",
+                SttEngine.SERVER to "Server",
+                SttEngine.FULL_DUPLEX to "Full-duplex",
+            )
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                sttOptions.forEachIndexed { index, (engine, label) ->
+                    SegmentedButton(
+                        selected = state.sttEngine == engine,
+                        onClick = { viewModel.setSttEngine(engine) },
+                        shape = SegmentedButtonDefaults.itemShape(index, sttOptions.size),
                     ) {
                         Text(label)
                     }

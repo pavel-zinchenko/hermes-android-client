@@ -5,7 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,9 +23,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,18 +37,19 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -60,24 +61,29 @@ import com.hermes.android.data.model.Sender
 import com.hermes.android.data.model.TurnPart
 import com.hermes.android.ui.AppViewModelProvider
 import com.hermes.android.ui.chat.AssistantPartsMessage
+import com.hermes.android.ui.chat.CallState
 import com.hermes.android.ui.chat.ChatSessionViewModel
 import com.hermes.android.ui.chat.InitialScrollToBottomEffect
 import com.hermes.android.ui.chat.MarkdownText
-import com.hermes.android.ui.chat.VoicePhase
-import kotlinx.coroutines.launch
 
+/**
+ * Continuous voice-call mode. Unlike push-to-talk [VoiceScreen], the mic stays open
+ * for the whole call and the big button only mutes/unmutes it. The app listens,
+ * transcribes each utterance, sends it to Hermes, speaks the reply, and stops
+ * speaking the instant the user talks over it (barge-in). Shares the session's
+ * [ChatSessionViewModel], so the call appends to the same conversation.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun VoiceScreen(
+fun CallScreen(
     onBack: () -> Unit,
-    onOpenCall: () -> Unit,
     viewModel: ChatSessionViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val view = LocalView.current
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
 
     var hasPermission by remember {
         mutableStateOf(
@@ -87,17 +93,24 @@ fun VoiceScreen(
     }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasPermission = granted
-        if (!granted) {
-            scope.launch {
-                snackbarHostState.showSnackbar("Microphone permission is required for voice mode.")
-            }
+    ) { granted -> hasPermission = granted }
+
+    // Ask for the mic on entry if needed; start the call once it's granted.
+    LaunchedEffect(Unit) {
+        if (!hasPermission) permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    LaunchedEffect(hasPermission) {
+        if (hasPermission) viewModel.startCall()
+    }
+    // Keep the screen awake for the duration of the call; end the call on leave.
+    DisposableEffect(Unit) {
+        view.keepScreenOn = true
+        onDispose {
+            view.keepScreenOn = false
+            viewModel.endCall()
         }
     }
 
-    // Only auto-follow when already at the bottom; if the user scrolled up to read,
-    // don't yank them back down mid-stream.
     val atBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
@@ -105,9 +118,6 @@ fun VoiceScreen(
             last == null || last.index >= info.totalItemsCount - 2
         }
     }
-    // A signal that grows as the streaming turn's content does (deltas, thinking,
-    // tool completion), so we re-pin on every chunk — not just on a new message —
-    // keeping the end of a growing answer in view above the talk button.
     val streamSignal = state.messages.lastOrNull()?.let { m ->
         m.text.length + m.parts.sumOf { part ->
             when (part) {
@@ -121,8 +131,6 @@ fun VoiceScreen(
     InitialScrollToBottomEffect(listState, state.loadingHistory, state.messages.size)
     LaunchedEffect(state.messages.size, streamSignal) {
         if (!atBottom || state.messages.isEmpty()) return@LaunchedEffect
-        // Large offset clamps to content end, so the newest line of a tall, still
-        // growing message shows at the bottom of the list rather than below the fold.
         listState.scrollToItem(state.messages.size - 1, 1_000_000)
     }
     LaunchedEffect(state.error) {
@@ -135,15 +143,10 @@ fun VoiceScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Voice", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = { Text("Call", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onOpenCall) {
-                        Icon(Icons.Filled.Call, contentDescription = "Call mode")
                     }
                 },
             )
@@ -159,7 +162,7 @@ fun VoiceScreen(
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 if (state.messages.isEmpty()) {
                     Text(
-                        text = "Hold the button and speak.\nRelease to send.",
+                        text = "Call mode is on.\nJust start talking — Hermes is listening.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -173,104 +176,97 @@ fun VoiceScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(state.messages, key = { it.id }) { message ->
-                            // Assistant turns stream as ordered parts (thinking /
-                            // tool / text), shown with the same UI as text chat;
-                            // user turns stay simple bubbles.
                             if (message.parts.isNotEmpty()) {
                                 AssistantPartsMessage(message) { viewModel.toggleThinking(message.id) }
                             } else {
-                                VoiceBubble(message)
+                                CallBubble(message)
                             }
                         }
                     }
                 }
             }
 
-            TalkButton(
-                phase = state.phase,
-                onPressStart = {
-                    if (!hasPermission) {
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        false
-                    } else {
-                        viewModel.startRecording()
-                        true
-                    }
-                },
-                onPressEnd = { viewModel.stopAndSend() },
+            // Live interim transcript (on-device STT) so the user sees themselves heard.
+            Text(
+                text = state.interimTranscript.ifBlank { " " },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontStyle = FontStyle.Italic,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+
+            MicToggleButton(
+                micEnabled = state.micEnabled,
+                onToggle = { viewModel.setMicEnabled(!state.micEnabled) },
             )
 
             Spacer(Modifier.height(8.dp))
             Text(
-                text = state.phase.label(),
+                text = callStatusLabel(state.micEnabled, state.callState),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
+            Spacer(Modifier.height(16.dp))
+
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.CallEnd,
+                    contentDescription = "End call",
+                    tint = MaterialTheme.colorScheme.onError,
+                )
+            }
             Spacer(Modifier.height(24.dp))
         }
     }
 }
 
 @Composable
-private fun TalkButton(
-    phase: VoicePhase,
-    onPressStart: () -> Boolean,
-    onPressEnd: () -> Unit,
+private fun MicToggleButton(
+    micEnabled: Boolean,
+    onToggle: () -> Unit,
 ) {
-    val recording = phase == VoicePhase.RECORDING
-    val busy = phase == VoicePhase.TRANSCRIBING || phase == VoicePhase.RESPONDING
-    val color = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-
+    val color =
+        if (micEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(160.dp)
+            .size(140.dp)
             .clip(CircleShape)
             .background(color)
-            // Always pressable: a press while Hermes is busy interrupts it and
-            // starts a new recording. Keyed on Unit so phase changes never restart
-            // (and thus never cancel) an ongoing press-and-hold gesture.
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onPress = {
-                        val started = onPressStart()
-                        tryAwaitRelease()
-                        if (started) onPressEnd()
-                    },
-                )
-            },
+            .clickable(onClick = onToggle),
     ) {
-        // While Hermes is working, ring the mic with a spinner — the button stays
-        // live so the user can tap to interrupt and start a new turn.
-        if (busy) {
-            CircularProgressIndicator(
-                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.6f),
-                strokeWidth = 3.dp,
-                modifier = Modifier.size(132.dp),
-            )
-        }
         Icon(
-            imageVector = Icons.Filled.Mic,
-            contentDescription = "Hold to talk",
-            tint = if (recording) {
-                MaterialTheme.colorScheme.onError
-            } else {
+            imageVector = if (micEnabled) Icons.Filled.Mic else Icons.Filled.MicOff,
+            contentDescription = if (micEnabled) "Mute mic" else "Unmute mic",
+            tint = if (micEnabled) {
                 MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
             },
-            modifier = Modifier.size(64.dp),
+            modifier = Modifier.size(56.dp),
         )
     }
 }
 
-private fun VoicePhase.label(): String = when (this) {
-    VoicePhase.IDLE -> "Hold to talk"
-    VoicePhase.RECORDING -> "Listening…"
-    VoicePhase.TRANSCRIBING -> "Transcribing…"
-    VoicePhase.RESPONDING -> "Hermes is responding…"
+private fun callStatusLabel(micEnabled: Boolean, callState: CallState): String = when {
+    !micEnabled -> "Muted — tap to unmute"
+    callState == CallState.LISTENING -> "Listening…"
+    callState == CallState.THINKING -> "Thinking…"
+    else -> "Hermes is speaking…"
 }
 
 @Composable
-private fun VoiceBubble(message: ChatMessage) {
+private fun CallBubble(message: ChatMessage) {
     val isUser = message.sender == Sender.USER
     Surface(
         color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
@@ -284,7 +280,6 @@ private fun VoiceBubble(message: ChatMessage) {
                 color = (if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
                     .copy(alpha = 0.7f),
             )
-            // Hermes answers in Markdown; render it formatted. User turns are plain text.
             if (isUser) {
                 Text(
                     text = message.text,

@@ -38,7 +38,7 @@ object AudioDecoder {
      */
     fun toTrimmedWav(bytes: ByteArray, mime: String): ByteArray? = try {
         decode(bytes)?.let { pcm ->
-            trim(pcm)?.let { wav(it.data, pcm.sampleRate, pcm.channels) }
+            trim(pcm)?.let { PcmWav.wrap(it.data, pcm.sampleRate, pcm.channels) }
         }
     } catch (_: Exception) {
         // Unsupported codec / malformed clip — caller falls back to the original.
@@ -47,6 +47,21 @@ object AudioDecoder {
 
     /** Raw interleaved 16-bit little-endian PCM plus its format. */
     private class Pcm(val data: ByteArray, val sampleRate: Int, val channels: Int)
+
+    /** Public decoded-PCM result for callers that need samples, not a WAV (e.g. AEC render). */
+    class DecodedPcm(val data: ByteArray, val sampleRate: Int, val channels: Int)
+
+    /**
+     * Decodes [bytes] (compressed audio of [mime]) to interleaved 16-bit little-endian
+     * PCM with its sample rate / channel count — or null if it can't be decoded. Unlike
+     * [toTrimmedWav], no silence trimming and no WAV wrapping: full-duplex playback
+     * resamples this to 16 kHz mono and streams it through the echo canceller.
+     */
+    fun decodeToPcm(bytes: ByteArray, mime: String): DecodedPcm? = try {
+        decode(bytes)?.let { DecodedPcm(it.data, it.sampleRate, it.channels) }
+    } catch (_: Exception) {
+        null
+    }
 
     private fun decode(bytes: ByteArray): Pcm? {
         val extractor = MediaExtractor()
@@ -156,27 +171,6 @@ object AudioDecoder {
         val endByte = (endFrame + 1) * bytesPerFrame
         if (startByte == 0 && endByte == pcm.data.size) return pcm
         return Pcm(pcm.data.copyOfRange(startByte, endByte), pcm.sampleRate, pcm.channels)
-    }
-
-    /** Wraps 16-bit PCM in a minimal canonical WAV container. */
-    private fun wav(pcm: ByteArray, sampleRate: Int, channels: Int): ByteArray {
-        val blockAlign = channels * 2
-        val byteRate = sampleRate * blockAlign
-        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-        header.put("RIFF".toByteArray(Charsets.US_ASCII))
-        header.putInt(36 + pcm.size)
-        header.put("WAVE".toByteArray(Charsets.US_ASCII))
-        header.put("fmt ".toByteArray(Charsets.US_ASCII))
-        header.putInt(16)                        // PCM fmt chunk size
-        header.putShort(1)                       // audio format = PCM
-        header.putShort(channels.toShort())
-        header.putInt(sampleRate)
-        header.putInt(byteRate)
-        header.putShort(blockAlign.toShort())
-        header.putShort(16)                      // bits per sample
-        header.put("data".toByteArray(Charsets.US_ASCII))
-        header.putInt(pcm.size)
-        return header.array() + pcm
     }
 
     /** Lets MediaExtractor read a clip straight from memory — no temp file needed. */

@@ -28,6 +28,10 @@ object SpeechSanitizer {
     // anywhere; underscores only when they aren't intra-word, so snake_case
     // identifiers ("my_func") are read intact instead of mangled to "myfunc".
     private val INLINE_MARKERS = Regex("\\*+|~~|`+|(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])")
+    // Standalone symbols a TTS voice would otherwise pronounce ("tilde", "slash",
+    // "vertical bar", "backslash"). Replaced with a space (not removed) so "and/or"
+    // reads as "and or" rather than "andor", and a table row "a | b" doesn't fuse.
+    private val SPOKEN_SYMBOLS = Regex("[~/\\\\|]")
     // Emoji, pictographs, symbols, dingbats, variation selectors and ZWJ.
     private val EMOJI = Regex(
         "[\\x{1F000}-\\x{1FAFF}\\x{2600}-\\x{27BF}\\x{2B00}-\\x{2BFF}" +
@@ -45,6 +49,7 @@ object SpeechSanitizer {
         s = LINK.replace(s) { it.groupValues[1] }
         s = LEADING_BLOCK.replace(s, "")
         s = INLINE_MARKERS.replace(s, "")
+        s = SPOKEN_SYMBOLS.replace(s, " ")
         s = EMOJI.replace(s, "")
         s = WHITESPACE.replace(s, " ")
         return s.trim()
